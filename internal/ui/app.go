@@ -725,8 +725,12 @@ func (a *App) initModuleEditorInputs() {
 	moduleDef := config.GetModuleDefinition(a.editingModule)
 	moduleConfig := a.config.GetModuleConfig(a.editingModule)
 
-	// Debug: show loaded config count
-	a.notification = fmt.Sprintf("Module '%s' has %d configured properties", a.editingModule, len(moduleConfig))
+	// Debug: show all loaded module keys
+	var moduleKeys []string
+	for k := range a.config.Modules {
+		moduleKeys = append(moduleKeys, k)
+	}
+	a.notification = fmt.Sprintf("Total modules: %d, Keys: %v", len(a.config.Modules), moduleKeys)
 	a.notificationType = "info"
 
 	// Combine common and module-specific properties
