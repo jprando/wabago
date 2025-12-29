@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/jprando/wabago/internal/config"
@@ -216,18 +217,7 @@ func (a *App) loadConfig() {
 		a.notificationType = "error"
 	} else {
 		a.config = cfg
-		// Show what was loaded for debugging
-		if len(cfg.Modules) == 0 {
-			// Check include value in raw
-			if inc, ok := cfg.Raw["include"]; ok {
-				a.notification = fmt.Sprintf("Include found: %v", inc)
-			} else {
-				a.notification = "No include directive found in config"
-			}
-			a.notificationType = "warning"
-		} else {
-			a.notification = ""
-		}
+		a.notification = ""
 	}
 
 	style, err := a.configManager.LoadStyle()
@@ -735,27 +725,8 @@ func (a *App) initModuleEditorInputs() {
 	moduleDef := config.GetModuleDefinition(a.editingModule)
 	moduleConfig := a.config.GetModuleConfig(a.editingModule)
 
-	// Debug: check if module exists with exact key match
-	if len(moduleConfig) == 0 {
-		// Direct check in map
-		if val, exists := a.config.Modules[a.editingModule]; exists {
-			a.notification = fmt.Sprintf("Key exists but GetModuleConfig failed. Type: %T", val)
-		} else {
-			// Show first few keys to compare
-			var keys []string
-			for k := range a.config.Modules {
-				keys = append(keys, fmt.Sprintf("'%s'", k))
-				if len(keys) >= 3 {
-					break
-				}
-			}
-			a.notification = fmt.Sprintf("Key '%s' not found. Sample keys: %s", a.editingModule, strings.Join(keys, ", "))
-		}
-		a.notificationType = "warning"
-	} else {
-		a.notification = fmt.Sprintf("Found %d props for %s", len(moduleConfig), a.editingModule)
-		a.notificationType = "success"
-	}
+	// Clear notification - status bar will show module info
+	a.notification = ""
 
 	// Combine common and module-specific properties
 	// Put module-specific properties first for better UX
@@ -914,41 +885,80 @@ func (a *App) renderHeader() string {
 	return styles.HeaderStyle.Render(header)
 }
 
-// getStatusSummary returns the current status summary for the footer
+// getStatusSummary returns context-specific status for the current view
 func (a *App) getStatusSummary() string {
-	var parts []string
+	var info string
 
-	// Module counts
-	moduleCount := len(a.config.Modules)
-	leftCount := len(a.config.ModulesLeft)
-	centerCount := len(a.config.ModulesCenter)
-	rightCount := len(a.config.ModulesRight)
-
-	parts = append(parts, fmt.Sprintf("%d modules", moduleCount))
-	parts = append(parts, fmt.Sprintf("L:%d C:%d R:%d", leftCount, centerCount, rightCount))
-
-	// Current view info
 	switch a.view {
+	case ViewMain:
+		// Main menu: show general config info
+		info = fmt.Sprintf("%d modules loaded | config: %s", len(a.config.Modules), filepath.Base(a.configPath))
+
 	case ViewBarSettings:
-		parts = append(parts, "editing bar settings")
+		// Bar settings: show current bar configuration
+		pos := a.config.Position
+		if pos == "" {
+			pos = "top"
+		}
+		info = fmt.Sprintf("position: %s | height: %d | spacing: %d", pos, a.config.Height, a.config.Spacing)
+
 	case ViewModulesLeft:
-		parts = append(parts, "left modules")
+		// Left modules: show count and selected
+		count := len(a.config.ModulesLeft)
+		if count > 0 && a.listIndex < count {
+			info = fmt.Sprintf("%d modules | selected: %s", count, a.config.ModulesLeft[a.listIndex])
+		} else {
+			info = fmt.Sprintf("%d modules", count)
+		}
+
 	case ViewModulesCenter:
-		parts = append(parts, "center modules")
+		// Center modules: show count and selected
+		count := len(a.config.ModulesCenter)
+		if count > 0 && a.listIndex < count {
+			info = fmt.Sprintf("%d modules | selected: %s", count, a.config.ModulesCenter[a.listIndex])
+		} else {
+			info = fmt.Sprintf("%d modules", count)
+		}
+
 	case ViewModulesRight:
-		parts = append(parts, "right modules")
+		// Right modules: show count and selected
+		count := len(a.config.ModulesRight)
+		if count > 0 && a.listIndex < count {
+			info = fmt.Sprintf("%d modules | selected: %s", count, a.config.ModulesRight[a.listIndex])
+		} else {
+			info = fmt.Sprintf("%d modules", count)
+		}
+
 	case ViewModuleEditor:
-		parts = append(parts, fmt.Sprintf("editing: %s", a.editingModule))
+		// Module editor: show module name and configured properties count
+		moduleConfig := a.config.GetModuleConfig(a.editingModule)
+		info = fmt.Sprintf("editing: %s | %d properties configured", a.editingModule, len(moduleConfig))
+
 	case ViewModuleAdd:
-		parts = append(parts, "adding module")
+		// Add module: show selected category
+		categories := config.GetModuleCategories()
+		if a.addModuleCategory < len(categories) {
+			info = fmt.Sprintf("category: %s | %d modules available", categories[a.addModuleCategory].Name, len(categories[a.addModuleCategory].Modules))
+		}
+
 	case ViewStyleEditor:
-		parts = append(parts, "style editor")
+		// Style editor: show file info
+		lines := len(strings.Split(a.styleContent, "\n"))
+		info = fmt.Sprintf("style.css | %d lines", lines)
+
 	case ViewBackups:
-		parts = append(parts, "backups")
+		// Backups: show count
+		backups, _ := a.configManager.GetBackups()
+		info = fmt.Sprintf("%d backups available", len(backups))
+
+	case ViewHelp:
+		info = "keyboard shortcuts reference"
+
+	default:
+		info = fmt.Sprintf("%d modules | L:%d C:%d R:%d", len(a.config.Modules), len(a.config.ModulesLeft), len(a.config.ModulesCenter), len(a.config.ModulesRight))
 	}
 
-	summary := strings.Join(parts, " | ")
-	return styles.StatusBarStyle.Render(summary)
+	return styles.StatusBarStyle.Render(info)
 }
 
 func (a *App) renderFooter() string {
