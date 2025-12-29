@@ -5,42 +5,6 @@
 
 ---
 
-## Limitações Importantes
-
-### COMANDOS SUDO
-- Claude Code **NÃO pode executar comandos que começam com `sudo`**
-- Quando um comando requer privilégios de root, Claude deve pedir ao usuário para executar o comando manualmente
-- Exemplo: Se preciso instalar um pacote, devo pedir: "Por favor, execute: `sudo pacman -S nome-do-pacote`"
-
----
-
-## Sistema: CachyOS com Niri (Wayland Compositor)
-
-### Comandos do Niri
-
-**IMPORTANTE:**
-- O comando `niri msg validate-config` **NÃO existe/não funciona**
-- Para recarregar as configurações do Niri após editar o arquivo de configuração, use:
-  ```bash
-  niri msg action load-config-file
-  ```
-
-### Arquivo de Configuração
-- Localização: `/home/jeudi/.config/niri/config.kdl`
-- Formato: KDL (KDL Document Language)
-
-### Configurações Aplicadas
-- **Natural Scrolling no Mouse**: Configurado em 2025-12-28
-  - Localização no arquivo: linhas 20-22
-  - Configuração:
-    ```kdl
-    mouse {
-        natural-scroll // Enable natural (inverted) scrolling for mouse
-    }
-    ```
-
----
-
 ## Projeto WABAGO - Waybar Configuration TUI Editor
 
 ### Requisitos Implementados
