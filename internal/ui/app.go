@@ -216,8 +216,8 @@ func (a *App) loadConfig() {
 		a.notificationType = "error"
 	} else {
 		a.config = cfg
-		a.notification = fmt.Sprintf("Loaded %d modules", len(cfg.Modules))
-		a.notificationType = "success"
+		// Don't set notification - let status summary show the info
+		a.notification = ""
 	}
 
 	style, err := a.configManager.LoadStyle()
@@ -725,13 +725,8 @@ func (a *App) initModuleEditorInputs() {
 	moduleDef := config.GetModuleDefinition(a.editingModule)
 	moduleConfig := a.config.GetModuleConfig(a.editingModule)
 
-	// Debug: show all loaded module keys
-	var moduleKeys []string
-	for k := range a.config.Modules {
-		moduleKeys = append(moduleKeys, k)
-	}
-	a.notification = fmt.Sprintf("Total modules: %d, Keys: %v", len(a.config.Modules), moduleKeys)
-	a.notificationType = "info"
+	// Clear notification when entering editor
+	a.notification = ""
 
 	// Combine common and module-specific properties
 	// Put module-specific properties first for better UX
@@ -890,23 +885,64 @@ func (a *App) renderHeader() string {
 	return styles.HeaderStyle.Render(header)
 }
 
-func (a *App) renderFooter() string {
-	// Notification
-	var notifyBar string
-	if a.notification != "" {
-		switch a.notificationType {
-		case "success":
-			notifyBar = styles.NotifySuccessStyle.Width(a.width - 4).Render(a.notification)
-		case "warning":
-			notifyBar = styles.NotifyWarningStyle.Width(a.width - 4).Render(a.notification)
-		case "error":
-			notifyBar = styles.NotifyErrorStyle.Width(a.width - 4).Render(a.notification)
-		default:
-			notifyBar = styles.NotifyInfoStyle.Width(a.width - 4).Render(a.notification)
-		}
+// getStatusSummary returns the current status summary for the footer
+func (a *App) getStatusSummary() string {
+	var parts []string
+
+	// Module counts
+	moduleCount := len(a.config.Modules)
+	leftCount := len(a.config.ModulesLeft)
+	centerCount := len(a.config.ModulesCenter)
+	rightCount := len(a.config.ModulesRight)
+
+	parts = append(parts, fmt.Sprintf("%d modules", moduleCount))
+	parts = append(parts, fmt.Sprintf("L:%d C:%d R:%d", leftCount, centerCount, rightCount))
+
+	// Current view info
+	switch a.view {
+	case ViewBarSettings:
+		parts = append(parts, "editing bar settings")
+	case ViewModulesLeft:
+		parts = append(parts, "left modules")
+	case ViewModulesCenter:
+		parts = append(parts, "center modules")
+	case ViewModulesRight:
+		parts = append(parts, "right modules")
+	case ViewModuleEditor:
+		parts = append(parts, fmt.Sprintf("editing: %s", a.editingModule))
+	case ViewModuleAdd:
+		parts = append(parts, "adding module")
+	case ViewStyleEditor:
+		parts = append(parts, "style editor")
+	case ViewBackups:
+		parts = append(parts, "backups")
 	}
 
-	// Help line
+	summary := strings.Join(parts, " | ")
+	return styles.StatusBarStyle.Render(summary)
+}
+
+func (a *App) renderFooter() string {
+	// Status line - always shows summary info
+	var statusLine string
+	if a.notification != "" {
+		// Show notification if present
+		switch a.notificationType {
+		case "success":
+			statusLine = styles.NotifySuccessStyle.Render(a.notification)
+		case "warning":
+			statusLine = styles.NotifyWarningStyle.Render(a.notification)
+		case "error":
+			statusLine = styles.NotifyErrorStyle.Render(a.notification)
+		default:
+			statusLine = styles.NotifyInfoStyle.Render(a.notification)
+		}
+	} else {
+		// Show default status summary
+		statusLine = a.getStatusSummary()
+	}
+
+	// Help line - keyboard shortcuts
 	helpKeys := []string{
 		styles.HelpKeyStyle.Render("?") + styles.HelpDescStyle.Render(" help"),
 		styles.HelpKeyStyle.Render("↑↓") + styles.HelpDescStyle.Render(" navigate"),
@@ -915,13 +951,9 @@ func (a *App) renderFooter() string {
 		styles.HelpKeyStyle.Render("ctrl+s") + styles.HelpDescStyle.Render(" save"),
 		styles.HelpKeyStyle.Render("q") + styles.HelpDescStyle.Render(" quit"),
 	}
+	helpLine := styles.StatusBarStyle.Render(strings.Join(helpKeys, "  "))
 
-	helpLine := styles.StatusBarStyle.Width(a.width - 4).Render(strings.Join(helpKeys, "  "))
-
-	if notifyBar != "" {
-		return lipgloss.JoinVertical(lipgloss.Left, notifyBar, helpLine)
-	}
-	return helpLine
+	return lipgloss.JoinVertical(lipgloss.Left, statusLine, helpLine)
 }
 
 func (a *App) renderMainView() string {
