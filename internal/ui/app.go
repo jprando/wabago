@@ -735,17 +735,22 @@ func (a *App) initModuleEditorInputs() {
 	moduleDef := config.GetModuleDefinition(a.editingModule)
 	moduleConfig := a.config.GetModuleConfig(a.editingModule)
 
-	// Debug: show if module config was found
+	// Debug: check if module exists with exact key match
 	if len(moduleConfig) == 0 {
-		// Check if key exists in Modules map
-		var availableKeys []string
-		for k := range a.config.Modules {
-			availableKeys = append(availableKeys, k)
-			if len(availableKeys) >= 5 {
-				break
+		// Direct check in map
+		if val, exists := a.config.Modules[a.editingModule]; exists {
+			a.notification = fmt.Sprintf("Key exists but GetModuleConfig failed. Type: %T", val)
+		} else {
+			// Show first few keys to compare
+			var keys []string
+			for k := range a.config.Modules {
+				keys = append(keys, fmt.Sprintf("'%s'", k))
+				if len(keys) >= 3 {
+					break
+				}
 			}
+			a.notification = fmt.Sprintf("Key '%s' not found. Sample keys: %s", a.editingModule, strings.Join(keys, ", "))
 		}
-		a.notification = fmt.Sprintf("No config for '%s'. Keys: %v", a.editingModule, availableKeys)
 		a.notificationType = "warning"
 	} else {
 		a.notification = fmt.Sprintf("Found %d props for %s", len(moduleConfig), a.editingModule)
