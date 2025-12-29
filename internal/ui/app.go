@@ -851,32 +851,28 @@ func (a *App) renderLayout(content string) string {
 }
 
 func (a *App) renderHeader() string {
-	// Compact header: WABAGO | status | path
-	logo := styles.LogoStyle.Render("WABAGO")
-
-	// Status indicator (compact)
-	var status string
+	// Status indicator - simple colored character
+	var statusChar string
 	if a.hasChanges {
-		status = styles.NotifyWarningStyle.Render("*")
+		statusChar = lipgloss.NewStyle().Foreground(styles.Warning).Render("*")
 	} else {
-		status = styles.NotifySuccessStyle.Render("~")
+		statusChar = lipgloss.NewStyle().Foreground(styles.Success).Render("~")
 	}
 
 	// Path info (truncate if needed)
 	configPath := a.configPath
-	maxPathLen := a.width - 30
-	if maxPathLen < 20 {
-		maxPathLen = 20
+	maxPathLen := a.width - 20
+	if maxPathLen < 15 {
+		maxPathLen = 15
 	}
 	if len(configPath) > maxPathLen {
 		configPath = "..." + configPath[len(configPath)-maxPathLen+3:]
 	}
-	pathInfo := styles.TextMutedStyle.Render(configPath)
 
-	headerLine := logo + " " + status + " " + pathInfo
+	// Build header as simple string
+	header := fmt.Sprintf("WABAGO %s %s", statusChar, configPath)
 
-	headerStyle := styles.HeaderStyle.Width(a.width - 4)
-	return headerStyle.Render(headerLine)
+	return styles.HeaderStyle.Render(header)
 }
 
 func (a *App) renderFooter() string {
