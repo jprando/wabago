@@ -735,8 +735,22 @@ func (a *App) initModuleEditorInputs() {
 	moduleDef := config.GetModuleDefinition(a.editingModule)
 	moduleConfig := a.config.GetModuleConfig(a.editingModule)
 
-	// Clear notification when entering editor
-	a.notification = ""
+	// Debug: show if module config was found
+	if len(moduleConfig) == 0 {
+		// Check if key exists in Modules map
+		var availableKeys []string
+		for k := range a.config.Modules {
+			availableKeys = append(availableKeys, k)
+			if len(availableKeys) >= 5 {
+				break
+			}
+		}
+		a.notification = fmt.Sprintf("No config for '%s'. Keys: %v", a.editingModule, availableKeys)
+		a.notificationType = "warning"
+	} else {
+		a.notification = fmt.Sprintf("Found %d props for %s", len(moduleConfig), a.editingModule)
+		a.notificationType = "success"
+	}
 
 	// Combine common and module-specific properties
 	// Put module-specific properties first for better UX
