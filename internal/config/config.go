@@ -211,30 +211,40 @@ func (m *ConfigManager) LoadConfig() (*WaybarConfig, error) {
 	}
 
 	// Process includes - Waybar supports including external config files
+	// Include can be array or single string
+	configDir := filepath.Dir(m.ConfigPath)
+
+	var includePaths []string
 	if includes, ok := raw["include"].([]interface{}); ok {
-		configDir := filepath.Dir(m.ConfigPath)
 		for _, inc := range includes {
 			if incPath, ok := inc.(string); ok {
-				// Handle relative paths
-				if !filepath.IsAbs(incPath) {
-					incPath = filepath.Join(configDir, incPath)
-				}
-				// Expand ~ to home directory
-				if strings.HasPrefix(incPath, "~") {
-					if home, err := os.UserHomeDir(); err == nil {
-						incPath = filepath.Join(home, incPath[1:])
-					}
-				}
-				// Load and merge included file
-				if incContent, err := os.ReadFile(incPath); err == nil {
-					incJSON := stripJSONCComments(string(incContent))
-					var incRaw map[string]interface{}
-					if err := json.Unmarshal([]byte(incJSON), &incRaw); err == nil {
-						// Merge included config into raw (included values override)
-						for k, v := range incRaw {
-							raw[k] = v
-						}
-					}
+				includePaths = append(includePaths, incPath)
+			}
+		}
+	} else if include, ok := raw["include"].(string); ok {
+		// Single include path
+		includePaths = append(includePaths, include)
+	}
+
+	for _, incPath := range includePaths {
+		// Expand ~ to home directory first
+		if strings.HasPrefix(incPath, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				incPath = filepath.Join(home, incPath[2:])
+			}
+		}
+		// Handle relative paths
+		if !filepath.IsAbs(incPath) {
+			incPath = filepath.Join(configDir, incPath)
+		}
+		// Load and merge included file
+		if incContent, err := os.ReadFile(incPath); err == nil {
+			incJSON := stripJSONCComments(string(incContent))
+			var incRaw map[string]interface{}
+			if err := json.Unmarshal([]byte(incJSON), &incRaw); err == nil {
+				// Merge included config into raw (included values override)
+				for k, v := range incRaw {
+					raw[k] = v
 				}
 			}
 		}

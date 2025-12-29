@@ -216,8 +216,18 @@ func (a *App) loadConfig() {
 		a.notificationType = "error"
 	} else {
 		a.config = cfg
-		// Don't set notification - let status summary show the info
-		a.notification = ""
+		// Show what was loaded for debugging
+		if len(cfg.Modules) == 0 {
+			// Check include value in raw
+			if inc, ok := cfg.Raw["include"]; ok {
+				a.notification = fmt.Sprintf("Include found: %v", inc)
+			} else {
+				a.notification = "No include directive found in config"
+			}
+			a.notificationType = "warning"
+		} else {
+			a.notification = ""
+		}
 	}
 
 	style, err := a.configManager.LoadStyle()
