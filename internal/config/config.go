@@ -210,6 +210,36 @@ func (m *ConfigManager) LoadConfig() (*WaybarConfig, error) {
 		}
 	}
 
+	// Process includes - Waybar supports including external config files
+	if includes, ok := raw["include"].([]interface{}); ok {
+		configDir := filepath.Dir(m.ConfigPath)
+		for _, inc := range includes {
+			if incPath, ok := inc.(string); ok {
+				// Handle relative paths
+				if !filepath.IsAbs(incPath) {
+					incPath = filepath.Join(configDir, incPath)
+				}
+				// Expand ~ to home directory
+				if strings.HasPrefix(incPath, "~") {
+					if home, err := os.UserHomeDir(); err == nil {
+						incPath = filepath.Join(home, incPath[1:])
+					}
+				}
+				// Load and merge included file
+				if incContent, err := os.ReadFile(incPath); err == nil {
+					incJSON := stripJSONCComments(string(incContent))
+					var incRaw map[string]interface{}
+					if err := json.Unmarshal([]byte(incJSON), &incRaw); err == nil {
+						// Merge included config into raw (included values override)
+						for k, v := range incRaw {
+							raw[k] = v
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Then parse into struct
 	config := &WaybarConfig{
 		Raw:     raw,
@@ -317,20 +347,11 @@ func (m *ConfigManager) LoadConfig() (*WaybarConfig, error) {
 		"modules-center": true, "modules-right": true, "include": true,
 	}
 
-	// Debug: collect all keys from raw
-	var allKeys []string
-	for key := range raw {
-		allKeys = append(allKeys, key)
-	}
-
 	for key, value := range raw {
 		if !knownKeys[key] {
 			config.Modules[key] = value
 		}
 	}
-
-	// Store debug info
-	config.Name = fmt.Sprintf("Keys in JSON: %v", allKeys)
 
 	return config, nil
 }
