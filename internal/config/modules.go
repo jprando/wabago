@@ -1,3 +1,4 @@
+// config defines the available Waybar module definitions, categories, and their specific properties.
 package config
 
 // ModuleCategory represents a category of waybar modules
@@ -29,10 +30,10 @@ func CommonProperties() []PropertyDefinition {
 	return []PropertyDefinition{
 		{Name: "format", Type: "string", Description: "Display format template with Pango markup support"},
 		{Name: "format-icons", Type: "array", Description: "Array of icons for different states"},
-		{Name: "rotate", Type: "integer", Default: 0, Description: "Rotation in degrees: 0, 90, 180, 270"},
+		{Name: "rotate", Type: "integer", Default: 0, Description: "Rotation in degrees: 0, 90, 180, 270", Options: []string{"0", "90", "180", "270"}},
 		{Name: "max-length", Type: "integer", Description: "Maximum length of the module text"},
 		{Name: "min-length", Type: "integer", Description: "Minimum length of the module text"},
-		{Name: "align", Type: "number", Description: "Alignment of text (0=left, 0.5=center, 1=right)"},
+		{Name: "align", Type: "number", Description: "Alignment of text (0=left, 0.5=center, 1=right)", Options: []string{"0", "0.5", "1"}},
 		{Name: "on-click", Type: "string", Description: "Command to execute on left click"},
 		{Name: "on-click-middle", Type: "string", Description: "Command to execute on middle click"},
 		{Name: "on-click-right", Type: "string", Description: "Command to execute on right click"},

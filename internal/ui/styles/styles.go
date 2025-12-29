@@ -1,3 +1,4 @@
+// styles defines the Lipgloss styles, color palette, and visual assets used throughout the application's UI.
 package styles
 
 import (
@@ -137,6 +138,11 @@ var (
 
 	InputStyle = lipgloss.NewStyle().
 			Foreground(TextPrimary).
+			Background(BgLight).
+			Padding(0, 1)
+
+	PlaceholderStyle = lipgloss.NewStyle().
+			Foreground(TextDim).
 			Background(BgLight).
 			Padding(0, 1)
 
