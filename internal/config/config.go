@@ -94,20 +94,88 @@ func (m *ConfigManager) StyleExists() bool {
 }
 
 // stripJSONCComments removes comments from JSONC content
+// This handles strings correctly to avoid removing // inside quoted strings
 func stripJSONCComments(content string) string {
-	// Remove single-line comments
-	singleLineRe := regexp.MustCompile(`//[^\n]*`)
-	content = singleLineRe.ReplaceAllString(content, "")
+	var result strings.Builder
+	inString := false
+	inSingleLineComment := false
+	inMultiLineComment := false
+	escaped := false
 
-	// Remove multi-line comments
-	multiLineRe := regexp.MustCompile(`/\*[\s\S]*?\*/`)
-	content = multiLineRe.ReplaceAllString(content, "")
+	runes := []rune(content)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		next := rune(0)
+		if i+1 < len(runes) {
+			next = runes[i+1]
+		}
+
+		// Handle escape sequences in strings
+		if inString && !escaped && c == '\\' {
+			escaped = true
+			result.WriteRune(c)
+			continue
+		}
+
+		if escaped {
+			escaped = false
+			result.WriteRune(c)
+			continue
+		}
+
+		// Handle string boundaries
+		if c == '"' && !inSingleLineComment && !inMultiLineComment {
+			inString = !inString
+			result.WriteRune(c)
+			continue
+		}
+
+		// Skip if in string
+		if inString {
+			result.WriteRune(c)
+			continue
+		}
+
+		// Handle single-line comment start
+		if !inMultiLineComment && c == '/' && next == '/' {
+			inSingleLineComment = true
+			i++ // skip next char
+			continue
+		}
+
+		// Handle single-line comment end
+		if inSingleLineComment && c == '\n' {
+			inSingleLineComment = false
+			result.WriteRune(c)
+			continue
+		}
+
+		// Handle multi-line comment start
+		if !inSingleLineComment && c == '/' && next == '*' {
+			inMultiLineComment = true
+			i++ // skip next char
+			continue
+		}
+
+		// Handle multi-line comment end
+		if inMultiLineComment && c == '*' && next == '/' {
+			inMultiLineComment = false
+			i++ // skip next char
+			continue
+		}
+
+		// Write character if not in comment
+		if !inSingleLineComment && !inMultiLineComment {
+			result.WriteRune(c)
+		}
+	}
 
 	// Remove trailing commas before } or ]
+	cleaned := result.String()
 	trailingCommaRe := regexp.MustCompile(`,\s*([}\]])`)
-	content = trailingCommaRe.ReplaceAllString(content, "$1")
+	cleaned = trailingCommaRe.ReplaceAllString(cleaned, "$1")
 
-	return content
+	return cleaned
 }
 
 // LoadConfig loads the waybar configuration

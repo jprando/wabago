@@ -851,42 +851,29 @@ func (a *App) renderLayout(content string) string {
 }
 
 func (a *App) renderHeader() string {
-	// Simple clean logo
+	// Compact header: WABAGO | status | path
 	logo := styles.LogoStyle.Render("WABAGO")
-	subtitle := styles.SubtitleStyle.Render("Waybar Configuration Editor")
 
-	// Status indicator
-	var statusIcon string
+	// Status indicator (compact)
+	var status string
 	if a.hasChanges {
-		statusIcon = styles.NotifyWarningStyle.Render(" UNSAVED ")
+		status = styles.NotifyWarningStyle.Render("*")
 	} else {
-		statusIcon = styles.NotifySuccessStyle.Render(" SAVED ")
+		status = styles.NotifySuccessStyle.Render("~")
 	}
 
-	// Path info (truncate if too long)
+	// Path info (truncate if needed)
 	configPath := a.configPath
-	maxPathLen := 40
+	maxPathLen := a.width - 30
+	if maxPathLen < 20 {
+		maxPathLen = 20
+	}
 	if len(configPath) > maxPathLen {
 		configPath = "..." + configPath[len(configPath)-maxPathLen+3:]
 	}
 	pathInfo := styles.TextMutedStyle.Render(configPath)
 
-	// Build header with fixed layout
-	leftContent := logo + "  " + subtitle
-	rightContent := statusIcon + "  " + pathInfo
-
-	// Calculate spacing
-	totalWidth := a.width - 4
-	leftWidth := lipgloss.Width(leftContent)
-	rightWidth := lipgloss.Width(rightContent)
-	spacerWidth := totalWidth - leftWidth - rightWidth
-
-	if spacerWidth < 2 {
-		spacerWidth = 2
-	}
-
-	spacer := strings.Repeat(" ", spacerWidth)
-	headerLine := leftContent + spacer + rightContent
+	headerLine := logo + " " + status + " " + pathInfo
 
 	headerStyle := styles.HeaderStyle.Width(a.width - 4)
 	return headerStyle.Render(headerLine)
