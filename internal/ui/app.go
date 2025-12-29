@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -724,11 +725,17 @@ func (a *App) initModuleEditorInputs() {
 	moduleDef := config.GetModuleDefinition(a.editingModule)
 	moduleConfig := a.config.GetModuleConfig(a.editingModule)
 
+	// Debug: show loaded config count
+	a.notification = fmt.Sprintf("Module '%s' has %d configured properties", a.editingModule, len(moduleConfig))
+	a.notificationType = "info"
+
 	// Combine common and module-specific properties
-	allProps := config.CommonProperties()
+	// Put module-specific properties first for better UX
+	var allProps []config.PropertyDefinition
 	if moduleDef != nil {
 		allProps = append(allProps, moduleDef.Properties...)
 	}
+	allProps = append(allProps, config.CommonProperties()...)
 
 	a.moduleProperties = make([]string, len(allProps))
 	a.textInputs = make([]textinput.Model, len(allProps))
@@ -751,8 +758,12 @@ func (a *App) initModuleEditorInputs() {
 			case bool:
 				ti.SetValue(fmt.Sprintf("%v", v))
 			default:
-				// For complex types, show JSON
-				ti.SetValue(fmt.Sprintf("%v", v))
+				// For complex types, try JSON encoding
+				if jsonBytes, err := json.Marshal(v); err == nil {
+					ti.SetValue(string(jsonBytes))
+				} else {
+					ti.SetValue(fmt.Sprintf("%v", v))
+				}
 			}
 		}
 
