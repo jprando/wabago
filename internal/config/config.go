@@ -317,11 +317,20 @@ func (m *ConfigManager) LoadConfig() (*WaybarConfig, error) {
 		"modules-center": true, "modules-right": true, "include": true,
 	}
 
+	// Debug: collect all keys from raw
+	var allKeys []string
+	for key := range raw {
+		allKeys = append(allKeys, key)
+	}
+
 	for key, value := range raw {
 		if !knownKeys[key] {
 			config.Modules[key] = value
 		}
 	}
+
+	// Store debug info
+	config.Name = fmt.Sprintf("Keys in JSON: %v", allKeys)
 
 	return config, nil
 }

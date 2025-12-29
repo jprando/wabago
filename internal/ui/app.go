@@ -216,10 +216,9 @@ func (a *App) loadConfig() {
 		a.notificationType = "error"
 	} else {
 		a.config = cfg
-		// Show debug info about loaded modules
-		a.notification = fmt.Sprintf("Loaded %d modules, %d left, %d center, %d right",
-			len(cfg.Modules), len(cfg.ModulesLeft), len(cfg.ModulesCenter), len(cfg.ModulesRight))
-		a.notificationType = "success"
+		// Show debug info - Name field contains debug keys
+		a.notification = cfg.Name
+		a.notificationType = "info"
 	}
 
 	style, err := a.configManager.LoadStyle()
