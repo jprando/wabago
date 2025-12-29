@@ -3,6 +3,7 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -13,10 +14,59 @@ import (
 	"github.com/jprando/wabago/internal/ui/styles"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// modifiedItemDelegate is a custom list delegate that highlights modified items
+type modifiedItemDelegate struct {
+	list.DefaultDelegate
+}
+
+func newModifiedItemDelegate() modifiedItemDelegate {
+	d := modifiedItemDelegate{
+		DefaultDelegate: list.NewDefaultDelegate(),
+	}
+	d.ShowDescription = true
+	d.SetSpacing(0)
+	return d
+}
+
+func (d modifiedItemDelegate) Render(w io.Writer, model list.Model, index int, item list.Item) {
+	// Check if this is a PropertyItem and if it's modified
+	if propItem, ok := item.(PropertyItem); ok && propItem.isModified {
+		// Render with modified style
+		title := d.Styles.NormalTitle.
+			Foreground(lipgloss.Color("226")).  // Yellow/orange color for modified items
+			Bold(true).
+			Render(propItem.Title())
+
+		desc := d.Styles.NormalDesc.
+			Foreground(lipgloss.Color("243")).
+			Render(propItem.Description())
+
+		// Check if this item is selected
+		if index == model.Index() {
+			title = d.Styles.SelectedTitle.
+				Foreground(lipgloss.Color("226")).
+				Bold(true).
+				Render("» " + propItem.Title())
+			desc = d.Styles.SelectedDesc.
+				Foreground(lipgloss.Color("243")).
+				Render(propItem.Description())
+		}
+
+		fmt.Fprint(w, lipgloss.JoinVertical(lipgloss.Left, title, desc))
+		return
+	}
+
+	// Default rendering for non-modified items
+	d.DefaultDelegate.Render(w, model, index, item)
+}
 
 func (a *App) loadConfig() {
 	cfg, err := a.configManager.LoadConfig()
@@ -97,6 +147,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleUpdate handles messages (internal)
 func (a *App) handleUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Save original message for views that need it (like List filtering)
+	originalMsg := msg
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
@@ -110,7 +163,43 @@ func (a *App) handleUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.notification = ""
 		}
 
-		// Global keys
+		// Module Editor needs original tea.Msg for list filtering
+		// If filtering is active, skip global keys and pass directly to view
+		if a.view == ViewModuleEditor {
+			if a.propertyList.FilterState() == list.Filtering {
+				// Skip global keys while filtering - pass message directly
+				return a.updateModuleEditorView(originalMsg)
+			}
+		}
+
+		// Bar Settings needs original tea.Msg for list filtering
+		// If filtering is active, skip global keys and pass directly to view
+		if a.view == ViewBarSettings {
+			if a.barSettingsList.FilterState() == list.Filtering {
+				// Skip global keys while filtering - pass message directly
+				return a.updateBarSettingsView(originalMsg)
+			}
+		}
+
+		// Main Menu needs original tea.Msg for list filtering
+		// If filtering is active, skip global keys and pass directly to view
+		if a.view == ViewMain {
+			if a.mainMenuList.FilterState() == list.Filtering {
+				// Skip global keys while filtering - pass message directly
+				return a.updateMainView(originalMsg)
+			}
+		}
+
+		// Modules List needs original tea.Msg for list filtering
+		// If filtering is active, skip global keys and pass directly to view
+		if a.view == ViewModulesLeft || a.view == ViewModulesCenter || a.view == ViewModulesRight {
+			if a.modulesList.FilterState() == list.Filtering {
+				// Skip global keys while filtering - pass message directly
+				return a.updateModulesListView(originalMsg)
+			}
+		}
+
+		// Global keys (processed only when NOT filtering)
 		switch {
 		case key.Matches(msg, a.keyMap.Quit):
 			if a.view == ViewMain {
@@ -150,16 +239,32 @@ func (a *App) handleUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
+		// Module Editor needs original tea.Msg for list filtering
+		// After global keys are handled, pass the original message
+		if a.view == ViewModuleEditor {
+			return a.updateModuleEditorView(originalMsg)
+		}
+
+		// Bar Settings needs original tea.Msg for list filtering
+		// After global keys are handled, pass the original message
+		if a.view == ViewBarSettings {
+			return a.updateBarSettingsView(originalMsg)
+		}
+
+		// Main Menu needs original tea.Msg for list filtering
+		// After global keys are handled, pass the original message
+		if a.view == ViewMain {
+			return a.updateMainView(originalMsg)
+		}
+
+		// Modules List needs original tea.Msg for list filtering
+		// After global keys are handled, pass the original message
+		if a.view == ViewModulesLeft || a.view == ViewModulesCenter || a.view == ViewModulesRight {
+			return a.updateModulesListView(originalMsg)
+		}
+
 		// View-specific handling
 		switch a.view {
-		case ViewMain:
-			return a.updateMainView(msg)
-		case ViewBarSettings:
-			return a.updateBarSettingsView(msg)
-		case ViewModulesLeft, ViewModulesCenter, ViewModulesRight:
-			return a.updateModulesListView(msg)
-		case ViewModuleEditor:
-			return a.updateModuleEditorView(msg)
 		case ViewModuleAdd:
 			return a.updateModuleAddView(msg)
 		case ViewStyleEditor:
@@ -264,13 +369,18 @@ func (a *App) reloadWaybar() tea.Cmd {
 
 
 func (a *App) openSelectModal(title string, options []string, targetIndex int, currentVal string) {
+	// Add "Clear Value" option at the end
+	extendedOptions := make([]string, len(options)+1)
+	copy(extendedOptions, options)
+	extendedOptions[len(options)] = "─── Clear Value ───"
+
 	a.modal = ModalState{
-		isActive:    true,
-		mode:        ModalTypeSelect,
-		title:       title,
-		options:     options,
-		index:       0,
-		targetIndex: targetIndex,
+		isActive:      true,
+		mode:          ModalTypeSelect,
+		title:         title,
+		options:       extendedOptions,
+		index:         0,
+		targetIndex:   targetIndex,
 		originalValue: currentVal,
 	}
 	// Try to find current value in options to select it
@@ -301,16 +411,14 @@ func (a *App) openInputModal(title string, targetIndex int, currentVal string) {
 }
 
 func (a *App) updateModalView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, a.keyMap.Back):
-		// Cancel
-		a.view = a.previousView
-		a.modal.isActive = false
-		return a, nil
-	}
-
 	if a.modal.mode == ModalTypeSelect {
+		// Select Mode: Both Esc and Backspace close the modal
 		switch {
+		case key.Matches(msg, a.keyMap.Back):
+			// Cancel
+			a.view = a.previousView
+			a.modal.isActive = false
+			return a, nil
 		case key.Matches(msg, a.keyMap.Up):
 			if a.modal.index > 0 {
 				a.modal.index--
@@ -329,8 +437,19 @@ func (a *App) updateModalView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 	} else {
-		// Input Mode
+		// Input Mode: Only Esc closes the modal, backspace edits text
 		switch {
+		case msg.String() == "esc":
+			// Cancel - only Esc closes, not backspace
+			a.view = a.previousView
+			a.modal.isActive = false
+			return a, nil
+		case msg.String() == "ctrl+d":
+			// Clear value - Ctrl+D
+			a.applyModalValue("")
+			a.view = a.previousView
+			a.modal.isActive = false
+			return a, nil
 		case key.Matches(msg, a.keyMap.Enter):
 			// Confirm
 			a.applyModalValue(a.modal.input.Value())
@@ -338,6 +457,7 @@ func (a *App) updateModalView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.modal.isActive = false
 			return a, nil
 		default:
+			// Pass all other keys (including backspace) to the input
 			var cmd tea.Cmd
 			a.modal.input, cmd = a.modal.input.Update(msg)
 			return a, cmd
@@ -360,7 +480,7 @@ func (a *App) applyModalValue(value string) {
 			switch value {
 			case "Configure":
 				a.view = ViewModuleEditor
-				a.initModuleEditorInputs()
+				a.initPropertyList()
 			case "Remove":
 				// Remove from all lists
 				var newLeft, newCenter, newRight []string
@@ -374,16 +494,32 @@ func (a *App) applyModalValue(value string) {
 			}
 		} else if a.modal.targetIndex == -2 {
 			// Add Module To
+			var position string
 			switch value {
 			case "Left":
 				a.config.ModulesLeft = append(a.config.ModulesLeft, a.editingModule)
 				a.hasChanges = true
+				position = "Left"
 			case "Center":
 				a.config.ModulesCenter = append(a.config.ModulesCenter, a.editingModule)
 				a.hasChanges = true
+				position = "Center"
 			case "Right":
 				a.config.ModulesRight = append(a.config.ModulesRight, a.editingModule)
 				a.hasChanges = true
+				position = "Right"
+			}
+
+			// Initialize module config if it doesn't exist
+			// This ensures the module will be saved with its configuration
+			if value != "Cancel" && value != "" {
+				if _, exists := a.config.Modules[a.editingModule]; !exists {
+					a.config.Modules[a.editingModule] = make(map[string]interface{})
+				}
+
+				// Show notification with reminder to save
+				a.notification = fmt.Sprintf("Added '%s' to Modules %s - Press Ctrl+S to save!", a.editingModule, position)
+				a.notificationType = "success"
 			}
 		}
 	}
@@ -412,11 +548,12 @@ func (a *App) renderModalView() string {
 		// Input Mode
 		original := styles.DescriptionStyle.Render(fmt.Sprintf("Current: %s", a.modal.originalValue))
 		input := styles.FocusedInputStyle.Render(a.modal.input.View())
-		
+
 		confirm := styles.ButtonStyle.Render("[Enter] Confirm")
+		clear := styles.ButtonStyle.Render("[Ctrl+D] Clear")
 		cancel := styles.ButtonDangerStyle.Render("[Esc] Cancel")
-		buttons := lipgloss.JoinHorizontal(lipgloss.Center, confirm, cancel)
-		
+		buttons := lipgloss.JoinHorizontal(lipgloss.Center, confirm, "  ", clear, "  ", cancel)
+
 		content = lipgloss.JoinVertical(lipgloss.Center, original, "", input, "", buttons)
 	}
 	
@@ -429,6 +566,33 @@ func (a *App) renderModalView() string {
 }
 
 func (a *App) updateBarSetting(index int, value string) {
+	// Handle clear value
+	if value == "─── Clear Value ───" || value == "" {
+		switch index {
+		case 0:
+			a.config.Position = ""
+		case 1:
+			a.config.Layer = ""
+		case 2:
+			a.config.Height = 0
+		case 3:
+			a.config.Width = 0
+		case 4:
+			a.config.Spacing = 0
+		case 5:
+			a.config.Margin = ""
+		case 6:
+			a.config.Mode = ""
+		case 7:
+			a.config.Name = ""
+		}
+		a.hasChanges = true
+		// Refresh the list to show cleared value
+		a.initBarSettingsList()
+		return
+	}
+
+	// Set value
 	switch index {
 	case 0:
 		a.config.Position = value
@@ -447,16 +611,31 @@ func (a *App) updateBarSetting(index int, value string) {
 	case 7:
 		a.config.Name = value
 	}
+
+	a.hasChanges = true
+	// Refresh the list to show updated value
+	a.initBarSettingsList()
 }
 
 func (a *App) updateModuleProperty(index int, value string) {
 	if index >= len(a.moduleProperties) {
 		return
 	}
-	
+
 	prop := a.moduleProperties[index]
 	moduleConfig := a.config.GetModuleConfig(a.editingModule)
-	
+
+	// Check if user wants to clear the value
+	if value == "─── Clear Value ───" || value == "" {
+		// Remove the property from config
+		delete(moduleConfig, prop.Name)
+		a.config.SetModuleConfig(a.editingModule, moduleConfig)
+		a.hasChanges = true
+		// Refresh the list to show cleared value
+		a.initPropertyList()
+		return
+	}
+
 	// Parse value based on type
 	switch prop.Type {
 	case "integer":
@@ -464,212 +643,347 @@ func (a *App) updateModuleProperty(index int, value string) {
 		if _, err := fmt.Sscanf(value, "%d", &intVal); err == nil {
 			moduleConfig[prop.Name] = intVal
 		} else {
-			// Try to handle empty or invalid as removal or string?
-			// For now, if it fails to parse but is not empty, keep as string or ignore
-			if value != "" {
-				moduleConfig[prop.Name] = value 
-			}
+			// If it fails to parse, keep as string
+			moduleConfig[prop.Name] = value
 		}
 	case "number":
 		var floatVal float64
 		if _, err := fmt.Sscanf(value, "%f", &floatVal); err == nil {
 			moduleConfig[prop.Name] = floatVal
 		} else {
-			if value != "" {
-				moduleConfig[prop.Name] = value
-			}
+			moduleConfig[prop.Name] = value
 		}
 	case "boolean":
 		var boolVal bool
 		if _, err := fmt.Sscanf(value, "%t", &boolVal); err == nil {
 			moduleConfig[prop.Name] = boolVal
 		} else {
-			if value != "" {
-				moduleConfig[prop.Name] = value
-			}
+			moduleConfig[prop.Name] = value
 		}
 	default:
 		moduleConfig[prop.Name] = value
 	}
-	
+
 	a.config.SetModuleConfig(a.editingModule, moduleConfig)
+	a.hasChanges = true
+	// Refresh the list to show updated value
+	a.initPropertyList()
 }
 
-func (a *App) updateMainView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	menuItems := a.getMainMenuItems()
+func (a *App) updateMainView(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
 
-	switch {
-	case key.Matches(msg, a.keyMap.Up):
-		if a.menuIndex > 0 {
-			a.menuIndex--
-		}
-	case key.Matches(msg, a.keyMap.Down):
-		if a.menuIndex < len(menuItems)-1 {
-			a.menuIndex++
-		}
-	case key.Matches(msg, a.keyMap.Enter):
-		if a.menuIndex < len(menuItems) {
-			item := menuItems[a.menuIndex]
-			if item.Title == "Reload Waybar" {
-				return a, a.reloadWaybar()
-			}
-			a.view = item.View
-			a.listIndex = 0
-			a.fieldIndex = 0
-			// Inputs are no longer initialized here for bar settings
-		}
-	}
-	return a, nil
-}
+	// Handle key messages
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		// Handle Enter to select menu item (but not while filtering)
+		if key.Matches(keyMsg, a.keyMap.Enter) && a.mainMenuList.FilterState() != list.Filtering {
+			selectedItem := a.mainMenuList.SelectedItem()
+			if menuItem, ok := selectedItem.(MenuItem); ok {
+				// Special handling for Reload Waybar
+				if menuItem.TitleText == "Reload Waybar" {
+					return a, a.reloadWaybar()
+				}
 
-func (a *App) updateBarSettingsView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, a.keyMap.Back):
-		a.view = ViewMain
-	case key.Matches(msg, a.keyMap.Up):
-		if a.fieldIndex > 0 {
-			a.fieldIndex--
-		}
-	case key.Matches(msg, a.keyMap.Down), key.Matches(msg, a.keyMap.Tab):
-		if a.fieldIndex < 7 { // 8 fields, 0-7
-			a.fieldIndex++
-		}
-	case key.Matches(msg, a.keyMap.Enter):
-		a.previousView = ViewBarSettings
-		
-		// Get current value
-		var currentVal string
-		switch a.fieldIndex {
-		case 0: currentVal = a.config.Position
-		case 1: currentVal = a.config.Layer
-		case 2: currentVal = fmt.Sprintf("%d", a.config.Height)
-		case 3: currentVal = fmt.Sprintf("%d", a.config.Width)
-		case 4: currentVal = fmt.Sprintf("%d", a.config.Spacing)
-		case 5: currentVal = a.config.Margin
-		case 6: currentVal = a.config.Mode
-		case 7: currentVal = a.config.Name
-		}
-		
-		switch a.fieldIndex {
-		case 0: // Position
-			a.openSelectModal("Select Position", []string{"top", "bottom", "left", "right"}, 0, currentVal)
-		case 1: // Layer
-			a.openSelectModal("Select Layer", []string{"top", "bottom", "overlay", "background"}, 1, currentVal)
-		case 6: // Mode
-			a.openSelectModal("Select Mode", []string{"dock", "hide", "invisible", "overlay"}, 6, currentVal)
-		default:
-			// Input modal for others
-			fieldNames := []string{"Position", "Layer", "Height", "Width", "Spacing", "Margin", "Mode", "Name"}
-			a.openInputModal("Edit "+fieldNames[a.fieldIndex], a.fieldIndex, currentVal)
-		}
-	}
-	return a, nil
-}
+				a.view = menuItem.View
+				a.listIndex = 0
+				a.fieldIndex = 0
 
-func (a *App) updateModulesListView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	modules := a.getCurrentModulesList()
-
-	switch {
-	case key.Matches(msg, a.keyMap.Back):
-		a.moving = false
-		a.view = ViewMain
-	case key.Matches(msg, a.keyMap.Up):
-		if a.moving && a.listIndex > 0 {
-			a.swapModules(a.listIndex, a.listIndex-1)
-			a.listIndex--
-			a.hasChanges = true
-		} else if a.listIndex > 0 {
-			a.listIndex--
-		}
-	case key.Matches(msg, a.keyMap.Down):
-		if a.moving && a.listIndex < len(modules)-1 {
-			a.swapModules(a.listIndex, a.listIndex+1)
-			a.listIndex++
-			a.hasChanges = true
-		} else if a.listIndex < len(modules)-1 {
-			a.listIndex++
-		}
-	case key.Matches(msg, a.keyMap.Enter):
-		if len(modules) > 0 && a.listIndex < len(modules) {
-			a.editingModule = modules[a.listIndex]
-			a.view = ViewModuleEditor
-			a.initModuleEditorInputs()
-		}
-	case key.Matches(msg, a.keyMap.Add):
-		a.view = ViewModuleAdd
-		a.addModuleCategory = 0
-		a.addModuleIndex = 0
-	case key.Matches(msg, a.keyMap.Delete):
-		if len(modules) > 0 && a.listIndex < len(modules) {
-			a.deleteModule(a.listIndex)
-			if a.listIndex >= len(a.getCurrentModulesList()) && a.listIndex > 0 {
-				a.listIndex--
-			}
-			a.hasChanges = true
-		}
-	case key.Matches(msg, a.keyMap.Move):
-		if len(modules) > 0 {
-			a.moving = !a.moving
-		}
-	}
-	return a, nil
-}
-
-func (a *App) updateModuleEditorView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, a.keyMap.Back):
-		// No apply needed, changes applied immediately via modal
-		a.view = a.previousView
-		if a.view == ViewMain {
-			// Determine correct modules view
-			for _, m := range a.config.ModulesLeft {
-				if m == a.editingModule {
-					a.view = ViewModulesLeft
-					break
+				// Initialize viewport if entering style editor
+				if menuItem.View == ViewStyleEditor {
+					a.initStyleViewport()
+				}
+				// Initialize diff if entering diff view
+				if menuItem.View == ViewDiff {
+					a.initDiffView()
+					a.initChangesTable()
+				}
+				// Initialize bar settings list if entering bar settings
+				if menuItem.View == ViewBarSettings {
+					a.initBarSettingsList()
+				}
+				// Initialize modules list if entering modules views
+				if menuItem.View == ViewModulesLeft || menuItem.View == ViewModulesCenter || menuItem.View == ViewModulesRight {
+					a.initModulesList()
 				}
 			}
-			for _, m := range a.config.ModulesCenter {
-				if m == a.editingModule {
-					a.view = ViewModulesCenter
-					break
+			return a, nil
+		}
+	}
+
+	// Pass message to list for navigation and filtering
+	a.mainMenuList, cmd = a.mainMenuList.Update(msg)
+	return a, cmd
+}
+
+func (a *App) updateBarSettingsView(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
+	// Handle key messages
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		// Handle back key separately (but not while filtering)
+		if key.Matches(keyMsg, a.keyMap.Back) && a.barSettingsList.FilterState() != list.Filtering {
+			a.view = ViewMain
+			return a, nil
+		}
+
+		// Handle Delete to clear property value (but not while filtering)
+		if key.Matches(keyMsg, a.keyMap.Delete) && a.barSettingsList.FilterState() != list.Filtering {
+			selectedItem := a.barSettingsList.SelectedItem()
+			if propItem, ok := selectedItem.(PropertyItem); ok {
+				prop := propItem.property
+
+				// Clear the bar setting value
+				switch prop.Name {
+				case "position":
+					a.config.Position = ""
+				case "layer":
+					a.config.Layer = ""
+				case "height":
+					a.config.Height = 0
+				case "width":
+					a.config.Width = 0
+				case "spacing":
+					a.config.Spacing = 0
+				case "margin":
+					a.config.Margin = ""
+				case "mode":
+					a.config.Mode = ""
+				case "name":
+					a.config.Name = ""
+				}
+
+				a.hasChanges = true
+				a.initBarSettingsList()
+
+				a.notification = fmt.Sprintf("Cleared value for '%s'", prop.Name)
+				a.notificationType = "success"
+			}
+			return a, nil
+		}
+
+		// Handle Enter to edit property (but not while filtering)
+		if key.Matches(keyMsg, a.keyMap.Enter) && a.barSettingsList.FilterState() != list.Filtering {
+			selectedItem := a.barSettingsList.SelectedItem()
+			if propItem, ok := selectedItem.(PropertyItem); ok {
+				prop := propItem.property
+
+				// Get current value
+				var currentVal string
+				switch prop.Name {
+				case "position":
+					currentVal = a.config.Position
+				case "layer":
+					currentVal = a.config.Layer
+				case "height":
+					currentVal = fmt.Sprintf("%d", a.config.Height)
+				case "width":
+					currentVal = fmt.Sprintf("%d", a.config.Width)
+				case "spacing":
+					currentVal = fmt.Sprintf("%d", a.config.Spacing)
+				case "margin":
+					currentVal = a.config.Margin
+				case "mode":
+					currentVal = a.config.Mode
+				case "name":
+					currentVal = a.config.Name
+				}
+
+				// Store the index for applying the value
+				a.fieldIndex = a.barSettingsList.Index()
+				a.previousView = ViewBarSettings
+
+				if len(prop.Options) > 0 {
+					a.openSelectModal("Select "+prop.Name, prop.Options, a.fieldIndex, currentVal)
+				} else {
+					a.openInputModal("Edit "+prop.Name, a.fieldIndex, currentVal)
 				}
 			}
-			for _, m := range a.config.ModulesRight {
-				if m == a.editingModule {
-					a.view = ViewModulesRight
-					break
+			return a, nil
+		}
+	}
+
+	// Pass message to list for navigation and filtering
+	a.barSettingsList, cmd = a.barSettingsList.Update(msg)
+	return a, cmd
+}
+
+func (a *App) updateModulesListView(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
+	// Handle key messages
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		// Don't process special keys while filtering
+		if a.modulesList.FilterState() != list.Filtering {
+			switch {
+			case key.Matches(keyMsg, a.keyMap.Back):
+				a.moving = false
+				a.view = ViewMain
+				return a, nil
+
+			case key.Matches(keyMsg, a.keyMap.Move):
+				modules := a.getCurrentModulesList()
+				if len(modules) > 0 {
+					a.moving = !a.moving
+					a.notification = "Move mode: " + map[bool]string{true: "ON", false: "OFF"}[a.moving]
+					a.notificationType = "info"
 				}
-			}
-		}
-	case key.Matches(msg, a.keyMap.Up):
-		if a.fieldIndex > 0 {
-			a.fieldIndex--
-		}
-	case key.Matches(msg, a.keyMap.Down), key.Matches(msg, a.keyMap.Tab):
-		if a.fieldIndex < len(a.moduleProperties)-1 {
-			a.fieldIndex++
-		}
-	case key.Matches(msg, a.keyMap.Enter):
-		if a.fieldIndex < len(a.moduleProperties) {
-			prop := a.moduleProperties[a.fieldIndex]
-			moduleConfig := a.config.GetModuleConfig(a.editingModule)
-			
-			// Get current value
-			var currentVal string
-			if val, ok := moduleConfig[prop.Name]; ok {
-				currentVal = fmt.Sprintf("%v", val)
-				// Clean up quotes if needed? fmt.Sprintf("%v") usually does fine for simple types.
-			}
-			
-			a.previousView = ViewModuleEditor
-			if len(prop.Options) > 0 {
-				a.openSelectModal("Select "+prop.Name, prop.Options, a.fieldIndex, currentVal)
-			} else {
-				a.openInputModal("Edit "+prop.Name, a.fieldIndex, currentVal)
+				return a, nil
+
+			case key.Matches(keyMsg, a.keyMap.Up):
+				if a.moving {
+					idx := a.modulesList.Index()
+					if idx > 0 {
+						a.swapModules(idx, idx-1)
+						a.hasChanges = true
+						// Refresh list and move selection up
+						a.initModulesList()
+						a.modulesList.Select(idx - 1)
+					}
+					return a, nil
+				}
+
+			case key.Matches(keyMsg, a.keyMap.Down):
+				if a.moving {
+					modules := a.getCurrentModulesList()
+					idx := a.modulesList.Index()
+					if idx < len(modules)-1 {
+						a.swapModules(idx, idx+1)
+						a.hasChanges = true
+						// Refresh list and move selection down
+						a.initModulesList()
+						a.modulesList.Select(idx + 1)
+					}
+					return a, nil
+				}
+
+			case key.Matches(keyMsg, a.keyMap.Enter):
+				selectedItem := a.modulesList.SelectedItem()
+				if moduleItem, ok := selectedItem.(ModuleListItem); ok {
+					a.editingModule = moduleItem.moduleName
+					a.view = ViewModuleEditor
+					a.initPropertyList()
+				}
+				return a, nil
+
+			case key.Matches(keyMsg, a.keyMap.Add):
+				a.view = ViewModuleAdd
+				a.addModuleCategory = 0
+				a.addModuleIndex = 0
+				a.previousView = a.view
+				return a, nil
+
+			case key.Matches(keyMsg, a.keyMap.Delete):
+				idx := a.modulesList.Index()
+				modules := a.getCurrentModulesList()
+				if len(modules) > 0 && idx < len(modules) {
+					moduleName := modules[idx]
+					a.deleteModule(idx)
+					a.hasChanges = true
+					// Refresh list
+					a.initModulesList()
+					// Adjust selection if needed
+					newModules := a.getCurrentModulesList()
+					if idx >= len(newModules) && idx > 0 {
+						a.modulesList.Select(idx - 1)
+					}
+					a.notification = fmt.Sprintf("Removed module '%s'", moduleName)
+					a.notificationType = "success"
+				}
+				return a, nil
 			}
 		}
 	}
-	return a, nil
+
+	// Pass message to list for navigation and filtering
+	a.modulesList, cmd = a.modulesList.Update(msg)
+	return a, cmd
+}
+
+func (a *App) updateModuleEditorView(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
+	// Handle key messages
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		// Handle back key separately (but not while filtering)
+		if key.Matches(keyMsg, a.keyMap.Back) && a.propertyList.FilterState() != list.Filtering {
+			// No apply needed, changes applied immediately via modal
+			a.view = a.previousView
+			if a.view == ViewMain {
+				// Determine correct modules view
+				for _, m := range a.config.ModulesLeft {
+					if m == a.editingModule {
+						a.view = ViewModulesLeft
+						break
+					}
+				}
+				for _, m := range a.config.ModulesCenter {
+					if m == a.editingModule {
+						a.view = ViewModulesCenter
+						break
+					}
+				}
+				for _, m := range a.config.ModulesRight {
+					if m == a.editingModule {
+						a.view = ViewModulesRight
+						break
+					}
+				}
+			}
+			return a, nil
+		}
+
+		// Handle Delete to clear property value (but not while filtering)
+		if key.Matches(keyMsg, a.keyMap.Delete) && a.propertyList.FilterState() != list.Filtering {
+			selectedItem := a.propertyList.SelectedItem()
+			if propItem, ok := selectedItem.(PropertyItem); ok {
+				prop := propItem.property
+				moduleConfig := a.config.GetModuleConfig(a.editingModule)
+
+				// Remove the property from config
+				delete(moduleConfig, prop.Name)
+				a.config.SetModuleConfig(a.editingModule, moduleConfig)
+				a.hasChanges = true
+
+				// Refresh the list to show cleared value
+				a.initPropertyList()
+
+				// Show notification
+				a.notification = fmt.Sprintf("Cleared value for '%s'", prop.Name)
+				a.notificationType = "success"
+			}
+			return a, nil
+		}
+
+		// Handle Enter to edit property (but not while filtering)
+		if key.Matches(keyMsg, a.keyMap.Enter) && a.propertyList.FilterState() != list.Filtering {
+			selectedItem := a.propertyList.SelectedItem()
+			if propItem, ok := selectedItem.(PropertyItem); ok {
+				prop := propItem.property
+				moduleConfig := a.config.GetModuleConfig(a.editingModule)
+
+				// Get current value
+				var currentVal string
+				if val, ok := moduleConfig[prop.Name]; ok {
+					currentVal = fmt.Sprintf("%v", val)
+				}
+
+				// Store the index for applying the value
+				a.fieldIndex = a.propertyList.Index()
+				a.previousView = ViewModuleEditor
+
+				if len(prop.Options) > 0 {
+					a.openSelectModal("Select "+prop.Name, prop.Options, a.fieldIndex, currentVal)
+				} else {
+					a.openInputModal("Edit "+prop.Name, a.fieldIndex, currentVal)
+				}
+			}
+			return a, nil
+		}
+	}
+
+	// Pass message to list for navigation and filtering
+	a.propertyList, cmd = a.propertyList.Update(msg)
+	return a, cmd
 }
 
 func (a *App) updateModuleAddView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -852,14 +1166,334 @@ func (a *App) renderModuleCatalogView() string {
 	return lipgloss.JoinVertical(lipgloss.Left, title, tabBar, listBox, hint)
 }
 
+func (a *App) initStyleViewport() {
+	// Calculate available height for viewport
+	headerHeight := 3 // title + padding
+	footerHeight := 2 // hint
+	viewportHeight := a.contentHeight - headerHeight - footerHeight
+	if viewportHeight < 4 {
+		viewportHeight = 4
+	}
+
+	// Create viewport with content
+	vp := viewport.New(a.width-10, viewportHeight)
+
+	// Format content with line numbers
+	lines := strings.Split(a.styleContent, "\n")
+	var formattedLines []string
+	for i, line := range lines {
+		lineNum := fmt.Sprintf("%3d │ ", i+1)
+		formattedLines = append(formattedLines, lineNum+line)
+	}
+
+	vp.SetContent(strings.Join(formattedLines, "\n"))
+	vp.YPosition = 0
+
+	a.styleViewport = vp
+}
+
+func (a *App) initDiffView() {
+	// Calculate diff between current state and saved files
+	diff, err := a.configManager.GetDiff(a.config, a.styleContent)
+	if err != nil {
+		a.diffContent = fmt.Sprintf("Error calculating diff: %v", err)
+		a.notification = "Failed to calculate diff"
+		a.notificationType = "error"
+	} else {
+		a.diffContent = diff
+	}
+	a.listIndex = 0 // Reset scroll position
+}
+
+func (a *App) initChangesTable() {
+	// Load saved configuration for comparison
+	savedConfig, err := a.configManager.LoadConfig()
+	if err != nil {
+		// If can't load saved config, show error
+		columns := []table.Column{
+			{Title: "Erro", Width: 60},
+		}
+		rows := []table.Row{
+			{fmt.Sprintf("Não foi possível carregar configuração salva: %v", err)},
+		}
+		t := table.New(
+			table.WithColumns(columns),
+			table.WithRows(rows),
+			table.WithFocused(true),
+			table.WithHeight(10),
+		)
+		a.changesTable = t
+		return
+	}
+
+	// Define columns
+	columns := []table.Column{
+		{Title: "Contexto", Width: 25},
+		{Title: "Atributo", Width: 20},
+		{Title: "Valor Novo", Width: 25},
+		{Title: "Valor Antigo", Width: 25},
+	}
+
+	// Collect changes
+	var rows []table.Row
+
+	// Compare bar settings
+	rows = append(rows, a.compareBarSettings(savedConfig)...)
+
+	// Compare module lists
+	rows = append(rows, a.compareModuleLists(savedConfig)...)
+
+	// Compare module configurations
+	rows = append(rows, a.compareModuleConfigs(savedConfig)...)
+
+	// If no changes, show a message
+	if len(rows) == 0 {
+		rows = append(rows, table.Row{"", "Nenhuma mudança detectada", "", ""})
+	}
+
+	t := table.New(
+		table.WithColumns(columns),
+		table.WithRows(rows),
+		table.WithFocused(true),
+		table.WithHeight(a.contentHeight - 8),
+	)
+
+	s := table.DefaultStyles()
+	s.Header = s.Header.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		BorderBottom(true).
+		Bold(false)
+	s.Selected = s.Selected.
+		Foreground(lipgloss.Color("229")).
+		Background(lipgloss.Color("57")).
+		Bold(false)
+	t.SetStyles(s)
+
+	a.changesTable = t
+}
+
+// compareBarSettings compares bar-level settings between saved and current config
+func (a *App) compareBarSettings(saved *config.WaybarConfig) []table.Row {
+	var rows []table.Row
+
+	// Compare position
+	if a.config.Position != saved.Position {
+		rows = append(rows, table.Row{
+			"Bar Settings",
+			"position",
+			a.config.Position,
+			saved.Position,
+		})
+	}
+
+	// Compare layer
+	if a.config.Layer != saved.Layer {
+		rows = append(rows, table.Row{
+			"Bar Settings",
+			"layer",
+			a.config.Layer,
+			saved.Layer,
+		})
+	}
+
+	// Compare height
+	if a.config.Height != saved.Height {
+		rows = append(rows, table.Row{
+			"Bar Settings",
+			"height",
+			fmt.Sprintf("%d", a.config.Height),
+			fmt.Sprintf("%d", saved.Height),
+		})
+	}
+
+	// Compare width
+	if a.config.Width != saved.Width {
+		rows = append(rows, table.Row{
+			"Bar Settings",
+			"width",
+			fmt.Sprintf("%d", a.config.Width),
+			fmt.Sprintf("%d", saved.Width),
+		})
+	}
+
+	// Compare spacing
+	if a.config.Spacing != saved.Spacing {
+		rows = append(rows, table.Row{
+			"Bar Settings",
+			"spacing",
+			fmt.Sprintf("%d", a.config.Spacing),
+			fmt.Sprintf("%d", saved.Spacing),
+		})
+	}
+
+	// Compare margin
+	if a.config.Margin != saved.Margin {
+		rows = append(rows, table.Row{
+			"Bar Settings",
+			"margin",
+			a.config.Margin,
+			saved.Margin,
+		})
+	}
+
+	// Compare mode
+	if a.config.Mode != saved.Mode {
+		rows = append(rows, table.Row{
+			"Bar Settings",
+			"mode",
+			a.config.Mode,
+			saved.Mode,
+		})
+	}
+
+	// Compare name
+	if a.config.Name != saved.Name {
+		rows = append(rows, table.Row{
+			"Bar Settings",
+			"name",
+			a.config.Name,
+			saved.Name,
+		})
+	}
+
+	return rows
+}
+
+// compareModuleLists compares module lists between saved and current config
+func (a *App) compareModuleLists(saved *config.WaybarConfig) []table.Row {
+	var rows []table.Row
+
+	// Compare modules-left
+	if !slicesEqual(a.config.ModulesLeft, saved.ModulesLeft) {
+		rows = append(rows, table.Row{
+			"Modules",
+			"modules-left",
+			fmt.Sprintf("%v", a.config.ModulesLeft),
+			fmt.Sprintf("%v", saved.ModulesLeft),
+		})
+	}
+
+	// Compare modules-center
+	if !slicesEqual(a.config.ModulesCenter, saved.ModulesCenter) {
+		rows = append(rows, table.Row{
+			"Modules",
+			"modules-center",
+			fmt.Sprintf("%v", a.config.ModulesCenter),
+			fmt.Sprintf("%v", saved.ModulesCenter),
+		})
+	}
+
+	// Compare modules-right
+	if !slicesEqual(a.config.ModulesRight, saved.ModulesRight) {
+		rows = append(rows, table.Row{
+			"Modules",
+			"modules-right",
+			fmt.Sprintf("%v", a.config.ModulesRight),
+			fmt.Sprintf("%v", saved.ModulesRight),
+		})
+	}
+
+	return rows
+}
+
+// compareModuleConfigs compares individual module configurations
+func (a *App) compareModuleConfigs(saved *config.WaybarConfig) []table.Row {
+	var rows []table.Row
+
+	// Get all modules from both configs
+	allModules := make(map[string]bool)
+	for moduleName := range a.config.Modules {
+		allModules[moduleName] = true
+	}
+	for moduleName := range saved.Modules {
+		allModules[moduleName] = true
+	}
+
+	// Compare each module
+	for moduleName := range allModules {
+		currentConfig := a.config.GetModuleConfig(moduleName)
+		savedConfig := saved.GetModuleConfig(moduleName)
+
+		// Get all properties from both configs
+		allProps := make(map[string]bool)
+		for prop := range currentConfig {
+			allProps[prop] = true
+		}
+		for prop := range savedConfig {
+			allProps[prop] = true
+		}
+
+		// Compare each property
+		for prop := range allProps {
+			currentVal := currentConfig[prop]
+			savedVal := savedConfig[prop]
+
+			// Compare values
+			if !valuesEqual(currentVal, savedVal) {
+				rows = append(rows, table.Row{
+					moduleName,
+					prop,
+					formatValue(currentVal),
+					formatValue(savedVal),
+				})
+			}
+		}
+	}
+
+	return rows
+}
+
+// slicesEqual compares two string slices
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// valuesEqual compares two interface{} values
+func valuesEqual(a, b interface{}) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+}
+
+// formatValue formats an interface{} value for display
+func formatValue(v interface{}) string {
+	if v == nil {
+		return "(empty)"
+	}
+	return fmt.Sprintf("%v", v)
+}
+
 func (a *App) updateStyleEditorView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
 	switch {
 	case key.Matches(msg, a.keyMap.Back):
 		a.view = ViewMain
+		return a, nil
+	case key.Matches(msg, a.keyMap.Up):
+		a.styleViewport, cmd = a.styleViewport.Update(msg)
+		return a, cmd
+	case key.Matches(msg, a.keyMap.Down):
+		a.styleViewport, cmd = a.styleViewport.Update(msg)
+		return a, cmd
 	}
-	// For now, style editor is read-only in this simplified version
-	// A full implementation would use a textarea component
-	return a, nil
+
+	// Pass other keys to viewport for navigation
+	a.styleViewport, cmd = a.styleViewport.Update(msg)
+	return a, cmd
 }
 
 func (a *App) updateBackupsView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -889,6 +1523,20 @@ func (a *App) updateBackupsView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return a, nil
+}
+
+func (a *App) updateDiffView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
+	switch {
+	case key.Matches(msg, a.keyMap.Back):
+		a.view = ViewMain
+		return a, nil
+	}
+
+	// Pass other keys to table for navigation
+	a.changesTable, cmd = a.changesTable.Update(msg)
+	return a, cmd
 }
 
 func (a *App) updateRestoreConfirmView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -990,15 +1638,15 @@ func (a *App) updateHelpView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a *App) getMainMenuItems() []MenuItem {
 	return []MenuItem{
-		{Title: "Bar Settings", Description: "Configure bar position, size, and behavior", Icon: styles.IconGear, View: ViewBarSettings},
-		{Title: "Module Catalog", Description: "Browse, enable and configure native modules", Icon: styles.IconPlugin, View: ViewModuleCatalog},
-		{Title: "Modules Left", Description: "Manage left-aligned modules", Icon: styles.IconArrowLeft, View: ViewModulesLeft},
-		{Title: "Modules Center", Description: "Manage center-aligned modules", Icon: styles.IconDot, View: ViewModulesCenter},
-		{Title: "Modules Right", Description: "Manage right-aligned modules", Icon: styles.IconArrowRight, View: ViewModulesRight},
-		{Title: "Style Editor", Description: "Edit CSS styling", Icon: styles.IconPalette, View: ViewStyleEditor},
-		{Title: "Review Changes", Description: "See pending changes vs saved config", Icon: styles.IconInfo, View: ViewDiff},
-		{Title: "Backups", Description: "Manage configuration backups", Icon: styles.IconFolder, View: ViewBackups},
-		{Title: "Reload Waybar", Description: "Force Waybar to reload config (verify & restore if failed)", Icon: styles.IconRefresh, View: ViewMain}, // ViewMain as placeholder, handled specially
+		{TitleText: "Bar Settings", DescriptionText: "Configure bar position, size, and behavior", Icon: styles.IconGear, View: ViewBarSettings},
+		{TitleText: "Module Catalog", DescriptionText: "Browse, enable and configure native modules", Icon: styles.IconPlugin, View: ViewModuleCatalog},
+		{TitleText: "Modules Left", DescriptionText: "Manage left-aligned modules", Icon: styles.IconArrowLeft, View: ViewModulesLeft},
+		{TitleText: "Modules Center", DescriptionText: "Manage center-aligned modules", Icon: styles.IconDot, View: ViewModulesCenter},
+		{TitleText: "Modules Right", DescriptionText: "Manage right-aligned modules", Icon: styles.IconArrowRight, View: ViewModulesRight},
+		{TitleText: "Style Editor", DescriptionText: "Edit CSS styling", Icon: styles.IconPalette, View: ViewStyleEditor},
+		{TitleText: "Review Changes", DescriptionText: "See pending changes vs saved config", Icon: styles.IconInfo, View: ViewDiff},
+		{TitleText: "Backups", DescriptionText: "Manage configuration backups", Icon: styles.IconFolder, View: ViewBackups},
+		{TitleText: "Reload Waybar", DescriptionText: "Force Waybar to reload config (verify & restore if failed)", Icon: styles.IconRefresh, View: ViewMain}, // ViewMain as placeholder, handled specially
 	}
 }
 
@@ -1046,22 +1694,50 @@ func (a *App) addModule(name string) {
 	case ViewModulesRight:
 		a.config.ModulesRight = append(a.config.ModulesRight, name)
 	}
+
+	// Initialize module config if it doesn't exist
+	// This ensures the module will be saved with its configuration
+	if _, exists := a.config.Modules[name]; !exists {
+		a.config.Modules[name] = make(map[string]interface{})
+	}
 }
 
-func (a *App) initModuleEditorInputs() {
+func (a *App) initPropertyList() {
 	moduleDef := config.GetModuleDefinition(a.editingModule)
 	moduleConfig := a.config.GetModuleConfig(a.editingModule)
 
-	// Clear notification - status bar will show module info
+	// Load saved config for comparison
+	savedConfig, err := a.configManager.LoadConfig()
+	var savedModuleConfig map[string]interface{}
+	if err == nil {
+		savedModuleConfig = savedConfig.GetModuleConfig(a.editingModule)
+	}
+
+	// Clear notification
 	a.notification = ""
 
-	// Combine common and module-specific properties
-	// Put module-specific properties first for better UX
-	var allProps []config.PropertyDefinition
+	// Combine common and module-specific properties with deduplication
+	propMap := make(map[string]config.PropertyDefinition)
+
+	// Add module-specific properties first (they take priority)
 	if moduleDef != nil {
-		allProps = append(allProps, moduleDef.Properties...)
+		for _, prop := range moduleDef.Properties {
+			propMap[prop.Name] = prop
+		}
 	}
-	allProps = append(allProps, config.CommonProperties()...)
+
+	// Add common properties (skip if already exists)
+	for _, prop := range config.CommonProperties() {
+		if _, exists := propMap[prop.Name]; !exists {
+			propMap[prop.Name] = prop
+		}
+	}
+
+	// Convert map to slice
+	var allProps []config.PropertyDefinition
+	for _, prop := range propMap {
+		allProps = append(allProps, prop)
+	}
 
 	// Sort properties: prioritized by having a value, then alphabetical
 	sort.Slice(allProps, func(i, j int) bool {
@@ -1075,7 +1751,7 @@ func (a *App) initModuleEditorInputs() {
 		}
 
 		if hasValI != hasValJ {
-			return hasValI // true comes first
+			return hasValI
 		}
 		return allProps[i].Name < allProps[j].Name
 	})
@@ -1083,6 +1759,193 @@ func (a *App) initModuleEditorInputs() {
 	a.moduleProperties = make([]config.PropertyDefinition, len(allProps))
 	copy(a.moduleProperties, allProps)
 	a.fieldIndex = 0
+
+	// Create list items
+	items := make([]list.Item, len(allProps))
+	for i, prop := range allProps {
+		var value, savedValue string
+		if val, ok := moduleConfig[prop.Name]; ok {
+			value = fmt.Sprintf("%v", val)
+		}
+		if err == nil {
+			if val, ok := savedModuleConfig[prop.Name]; ok {
+				savedValue = fmt.Sprintf("%v", val)
+			}
+		}
+
+		items[i] = PropertyItem{
+			property:   prop,
+			value:      value,
+			isModified: err == nil && value != savedValue,
+		}
+	}
+
+	// Initialize list with custom delegate for highlighting modified items
+	delegate := newModifiedItemDelegate()
+
+	l := list.New(items, delegate, 0, 0)
+	l.Title = "Edit Module: " + a.editingModule
+	l.SetShowStatusBar(true)
+	l.SetFilteringEnabled(true)
+	l.SetShowHelp(false) // We'll use custom help
+	l.Styles.Title = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("205")).
+		Bold(true).
+		Padding(0, 1)
+
+	a.propertyList = l
+}
+
+func (a *App) initBarSettingsList() {
+	// Define bar settings properties
+	barSettings := []config.PropertyDefinition{
+		{Name: "position", Description: "Bar position on screen", Options: []string{"top", "bottom", "left", "right"}},
+		{Name: "layer", Description: "Window layer", Options: []string{"top", "bottom", "overlay", "background"}},
+		{Name: "height", Description: "Bar height in pixels"},
+		{Name: "width", Description: "Bar width in pixels"},
+		{Name: "spacing", Description: "Spacing between modules"},
+		{Name: "margin", Description: "Margin around bar"},
+		{Name: "mode", Description: "Display mode", Options: []string{"dock", "hide", "invisible", "overlay"}},
+		{Name: "name", Description: "Bar name/identifier"},
+	}
+
+	// Load saved config for comparison
+	savedConfig, err := a.configManager.LoadConfig()
+
+	// Create list items with current values
+	items := make([]list.Item, len(barSettings))
+	for i, prop := range barSettings {
+		var value, savedValue string
+		switch prop.Name {
+		case "position":
+			value = a.config.Position
+			if err == nil {
+				savedValue = savedConfig.Position
+			}
+		case "layer":
+			value = a.config.Layer
+			if err == nil {
+				savedValue = savedConfig.Layer
+			}
+		case "height":
+			value = fmt.Sprintf("%d", a.config.Height)
+			if err == nil {
+				savedValue = fmt.Sprintf("%d", savedConfig.Height)
+			}
+		case "width":
+			value = fmt.Sprintf("%d", a.config.Width)
+			if err == nil {
+				savedValue = fmt.Sprintf("%d", savedConfig.Width)
+			}
+		case "spacing":
+			value = fmt.Sprintf("%d", a.config.Spacing)
+			if err == nil {
+				savedValue = fmt.Sprintf("%d", savedConfig.Spacing)
+			}
+		case "margin":
+			value = a.config.Margin
+			if err == nil {
+				savedValue = savedConfig.Margin
+			}
+		case "mode":
+			value = a.config.Mode
+			if err == nil {
+				savedValue = savedConfig.Mode
+			}
+		case "name":
+			value = a.config.Name
+			if err == nil {
+				savedValue = savedConfig.Name
+			}
+		}
+
+		items[i] = PropertyItem{
+			property:   prop,
+			value:      value,
+			isModified: err == nil && value != savedValue,
+		}
+	}
+
+	// Initialize list with custom delegate for highlighting modified items
+	delegate := newModifiedItemDelegate()
+
+	l := list.New(items, delegate, 0, 0)
+	l.Title = "Bar Settings"
+	l.SetShowStatusBar(true)
+	l.SetFilteringEnabled(true)
+	l.SetShowHelp(false)
+	l.Styles.Title = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("205")).
+		Bold(true).
+		Padding(0, 1)
+
+	a.barSettingsList = l
+}
+
+func (a *App) initMainMenuList() {
+	menuItems := a.getMainMenuItems()
+
+	// Convert to list items
+	items := make([]list.Item, len(menuItems))
+	for i, item := range menuItems {
+		items[i] = item
+	}
+
+	// Initialize list with filtering enabled
+	delegate := list.NewDefaultDelegate()
+	delegate.ShowDescription = true
+	delegate.SetSpacing(0)
+
+	l := list.New(items, delegate, 0, 0)
+	l.Title = "Waybar Configuration Editor"
+	l.SetShowStatusBar(true)
+	l.SetFilteringEnabled(true)
+	l.SetShowHelp(false)
+	l.Styles.Title = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("205")).
+		Bold(true).
+		Padding(0, 1)
+
+	a.mainMenuList = l
+}
+
+func (a *App) initModulesList() {
+	modules := a.getCurrentModulesList()
+
+	// Convert to list items
+	items := make([]list.Item, len(modules))
+	for i, moduleName := range modules {
+		items[i] = ModuleListItem{moduleName: moduleName}
+	}
+
+	// Initialize list with filtering enabled
+	delegate := list.NewDefaultDelegate()
+	delegate.ShowDescription = true
+	delegate.SetSpacing(0)
+
+	l := list.New(items, delegate, 0, 0)
+
+	// Set title based on current view
+	var title string
+	switch a.view {
+	case ViewModulesLeft:
+		title = "Modules Left"
+	case ViewModulesCenter:
+		title = "Modules Center"
+	case ViewModulesRight:
+		title = "Modules Right"
+	}
+
+	l.Title = title
+	l.SetShowStatusBar(true)
+	l.SetFilteringEnabled(true)
+	l.SetShowHelp(false)
+	l.Styles.Title = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("205")).
+		Bold(true).
+		Padding(0, 1)
+
+	a.modulesList = l
 }
 
 // applyBarSettings and applyModuleSettings are removed as updates happen via modals
@@ -1121,9 +1984,11 @@ func (a *App) View() string {
 		content = a.renderStyleEditorView()
 	case ViewBackups:
 		content = a.renderBackupsView()
+	case ViewDiff:
+		content = a.renderDiffView()
 	case ViewModuleCatalog:
 		content = a.renderModuleCatalogView()
-			case ViewRestoreConfirm:
+	case ViewRestoreConfirm:
 			content = a.renderRestoreConfirmView()
 		case ViewModal:
 			content = a.renderModalView()
@@ -1266,6 +2131,11 @@ func (a *App) getStatusSummary() string {
 		info = fmt.Sprintf("%d modules | L:%d C:%d R:%d", len(a.config.Modules), len(a.config.ModulesLeft), len(a.config.ModulesCenter), len(a.config.ModulesRight))
 	}
 
+	// Add unsaved changes indicator if there are changes
+	if a.hasChanges {
+		info += " " + styles.NotifyWarningStyle.Render("● Unsaved")
+	}
+
 	return styles.StatusBarStyle.Render(info)
 }
 
@@ -1305,309 +2175,75 @@ func (a *App) renderFooter() string {
 }
 
 func (a *App) renderMainView() string {
-	menuItems := a.getMainMenuItems()
-
-	var items []string
-	for i, item := range menuItems {
-		icon := styles.CategoryIconStyle.Render(item.Icon)
-		title := item.Title
-		desc := styles.DescriptionStyle.Render(item.Description)
-
-		if i == a.menuIndex {
-			title = styles.MenuSelectedStyle.Render(title)
-			icon = styles.ActiveItemStyle.Render(styles.IconSelected)
-		} else {
-			title = styles.MenuItemStyle.Render(title)
-			icon = styles.ListItemStyle.Render(" ")
-		}
-
-		itemLine := lipgloss.JoinHorizontal(lipgloss.Center, icon, " ", title)
-		items = append(items, lipgloss.JoinVertical(lipgloss.Left, itemLine, desc))
+	// Set list dimensions
+	listHeight := a.contentHeight - 4
+	if listHeight < 10 {
+		listHeight = 10
 	}
+	a.mainMenuList.SetSize(a.width-10, listHeight)
 
-	menu := lipgloss.JoinVertical(lipgloss.Left, items...)
+	// Render list
+	listView := a.mainMenuList.View()
 
-	menuBox := styles.BoxStyle.
-		Width(a.width - 10).
-		Render(menu)
+	hint := styles.DescriptionStyle.Render("↑↓ navigate | Enter select | / filter | q quit")
 
-	titleStyle := styles.TitleStyle.Copy().MarginBottom(1)
-	title := titleStyle.Render("Main Menu")
-
-	return lipgloss.JoinVertical(lipgloss.Left, title, menuBox)
+	return lipgloss.JoinVertical(lipgloss.Left, listView, "", hint)
 }
 
 func (a *App) renderBarSettingsView() string {
-	title := styles.TitleStyle.Render("Bar Settings")
-
-	fields := []string{
-		"Position", "Layer", "Height", "Width",
-		"Spacing", "Margin", "Mode", "Name",
+	// Set list dimensions
+	listHeight := a.contentHeight - 4
+	if listHeight < 10 {
+		listHeight = 10
 	}
+	a.barSettingsList.SetSize(a.width-10, listHeight)
 
-	var formItems []string
-	for i, field := range fields {
-		label := styles.LabelStyle.Render(field + ":")
-		
-		var value string
-		switch i {
-		case 0: value = a.config.Position
-		case 1: value = a.config.Layer
-		case 2: value = fmt.Sprintf("%d", a.config.Height)
-		case 3: value = fmt.Sprintf("%d", a.config.Width)
-		case 4: value = fmt.Sprintf("%d", a.config.Spacing)
-		case 5: value = a.config.Margin
-		case 6: value = a.config.Mode
-		case 7: value = a.config.Name
-		}
-		
-		var input string
-		if i == a.fieldIndex {
-			input = styles.FocusedInputStyle.Render(value)
-			// Add cursor/edit hint?
-			input = lipgloss.JoinHorizontal(lipgloss.Left, input, " ", styles.ActiveItemStyle.Render(styles.IconEdit))
-		} else {
-			input = styles.InputStyle.Render(value)
-		}
+	// Render list
+	listView := a.barSettingsList.View()
 
-		row := lipgloss.JoinHorizontal(lipgloss.Center, label, input)
-		formItems = append(formItems, row)
-	}
+	hint := styles.DescriptionStyle.Render("↑↓ navigate | Enter edit | / filter | Delete clear | Esc back")
 
-	form := lipgloss.JoinVertical(lipgloss.Left, formItems...)
-
-	formBox := styles.BoxStyle.
-		Width(a.width - 10).
-		Render(form)
-
-	hint := styles.DescriptionStyle.Render("Use ↑↓ to navigate, Enter to edit, Esc to go back")
-
-	return lipgloss.JoinVertical(lipgloss.Left, title, formBox, hint)
+	return lipgloss.JoinVertical(lipgloss.Left, listView, "", hint)
 }
 
 func (a *App) renderModulesListView() string {
-	var titleText string
-	switch a.view {
-	case ViewModulesLeft:
-		titleText = "Left Modules"
-	case ViewModulesCenter:
-		titleText = "Center Modules"
-	case ViewModulesRight:
-		titleText = "Right Modules"
+	// Set list dimensions
+	listHeight := a.contentHeight - 4
+	if listHeight < 10 {
+		listHeight = 10
 	}
+	a.modulesList.SetSize(a.width-10, listHeight)
 
-	title := styles.TitleStyle.Render(titleText)
-	
-	// Calculate available height for the list
-	// Title: ~2 lines
-	// Hint: ~1 line
-	// Box padding/border: ~2 lines (vertical padding) + 2 lines (border) = 4
-	// Total overhead: ~7 lines
-	listHeight := a.contentHeight - lipgloss.Height(title) - 2 // 1 for hint, 1 buffer
-	if listHeight < 4 {
-		listHeight = 4
-	}
+	// Render list
+	listView := a.modulesList.View()
 
-	modules := a.getCurrentModulesList()
-
-	if len(modules) == 0 {
-		empty := styles.EmptyStateStyle.Render("No modules configured\nPress 'a' to add a module")
-		return lipgloss.JoinVertical(lipgloss.Left, title, empty)
-	}
-
-	// Calculate max visible items
-	// Assume each item is approx 2 lines (name + description)
-	itemsPerView := (listHeight - 4) / 2
-	if itemsPerView < 1 {
-		itemsPerView = 1
-	}
-
-	// Windowing logic
-	startIdx := 0
-	if a.listIndex >= itemsPerView {
-		startIdx = a.listIndex - itemsPerView + 1
-	}
-	endIdx := startIdx + itemsPerView
-	if endIdx > len(modules) {
-		endIdx = len(modules)
-		// Adjust start if we have space
-		if endIdx-startIdx < itemsPerView {
-			startIdx = endIdx - itemsPerView
-			if startIdx < 0 {
-				startIdx = 0
-			}
-		}
-	}
-
-	var items []string
-	for i := startIdx; i < endIdx; i++ {
-		mod := modules[i]
-		moduleDef := config.GetModuleDefinition(mod)
-
-		var desc string
-		if moduleDef != nil {
-			desc = moduleDef.Description
-		}
-
-		var item string
-		if i == a.listIndex {
-			icon := styles.IconSelected
-			if a.moving {
-				icon = styles.IconTriangle
-			}
-			item = styles.SelectedItemStyle.Render(fmt.Sprintf("%s %s", icon, mod))
-		} else {
-			item = styles.ListItemStyle.Render(fmt.Sprintf("  %s", mod))
-		}
-
-		if desc != "" {
-			item = lipgloss.JoinVertical(lipgloss.Left, item, styles.DescriptionStyle.Render("  "+desc))
-		}
-
-		items = append(items, item)
-	}
-
-	list := lipgloss.JoinVertical(lipgloss.Left, items...)
-
-	listBox := styles.BoxStyle.
-		Width(a.width - 10).
-		Height(listHeight). // Set explicit height to fill space
-		Render(list)
-
+	// Add hint with move mode status
 	var modeHint string
 	if a.moving {
-		modeHint = styles.TagActiveStyle.Render("MOVE MODE") + " Use ↑↓ to reorder, m to exit move mode"
+		modeHint = styles.TagActiveStyle.Render("MOVE MODE") + " ↑↓ reorder | m exit move"
 	} else {
-		modeHint = "a: add  d: delete  m: move  enter: edit"
+		modeHint = "↑↓ navigate | Enter edit | / filter | a add | d delete | m move | Esc back"
 	}
 	hint := styles.DescriptionStyle.Render(modeHint)
 
-	return lipgloss.JoinVertical(lipgloss.Left, title, listBox, hint)
+	return lipgloss.JoinVertical(lipgloss.Left, listView, "", hint)
 }
 
 func (a *App) renderModuleEditorView() string {
-	title := styles.TitleStyle.Render("Edit Module: " + a.editingModule)
-
-	moduleDef := config.GetModuleDefinition(a.editingModule)
-	var moduleDesc string
-	if moduleDef != nil {
-		moduleDesc = styles.DescriptionStyle.Render(moduleDef.Description)
+	// Set list dimensions
+	listHeight := a.contentHeight - 4
+	if listHeight < 10 {
+		listHeight = 10
 	}
+	a.propertyList.SetSize(a.width-4, listHeight)
 
-	// Calculate available height
-	// Title: ~2 lines
-	// Desc: ~1-3 lines
-	// Hint: ~2-3 lines
-	// Box overhead: ~4 lines
-	// Total overhead: ~10 lines
-	
-	formHeight := a.contentHeight - lipgloss.Height(title) - lipgloss.Height(moduleDesc) - 3 // 3 for hint
-	if formHeight < 5 {
-		formHeight = 5
-	}
-	
-	maxVisible := (formHeight - 4) // Approx 1 line per field
+	// Render the list
+	listView := a.propertyList.View()
 
-	// Show scrollable list of properties
-	startIdx := 0
-	
-	if a.fieldIndex >= maxVisible {
-		startIdx = a.fieldIndex - maxVisible + 1
-	}
+	// Add hint
+	hint := styles.DescriptionStyle.Render("↑↓ navigate | Enter edit | / filter | Delete clear | Esc back")
 
-	endIdx := startIdx + maxVisible
-	if endIdx > len(a.moduleProperties) {
-		endIdx = len(a.moduleProperties)
-		// Adjust start if we have space
-		if endIdx-startIdx < maxVisible {
-			startIdx = endIdx - maxVisible
-			if startIdx < 0 {
-				startIdx = 0
-			}
-		}
-	}
-	
-	moduleConfig := a.config.GetModuleConfig(a.editingModule)
-
-	var formItems []string
-	for i := startIdx; i < endIdx; i++ {
-		prop := a.moduleProperties[i]
-		propName := prop.Name
-
-		// Get value from config directly
-		valueStr := ""
-		if val, ok := moduleConfig[propName]; ok {
-			valueStr = fmt.Sprintf("%v", val)
-		}
-
-		label := styles.LabelStyle.Width(25).Render(propName + ":")
-
-		var input string
-		displayVal := valueStr
-		isPlaceholder := false
-
-		if valueStr == "" {
-			if len(prop.Options) > 0 {
-				displayVal = strings.Join(prop.Options, ", ")
-				isPlaceholder = true
-			} else if prop.Type == "boolean" {
-				displayVal = "true, false"
-				isPlaceholder = true
-			}
-			
-			// Truncate placeholder if too long
-			if isPlaceholder && len(displayVal) > 40 {
-				displayVal = displayVal[:37] + "..."
-			}
-		}
-
-		if i == a.fieldIndex {
-			style := styles.FocusedInputStyle
-			if isPlaceholder {
-				style = style.Copy().Foreground(styles.TextDim)
-			}
-			input = style.Render(displayVal)
-			// Edit icon
-			input = lipgloss.JoinHorizontal(lipgloss.Left, input, " ", styles.ActiveItemStyle.Render(styles.IconEdit))
-		} else {
-			if isPlaceholder {
-				input = styles.PlaceholderStyle.Render(displayVal)
-			} else {
-				input = styles.InputStyle.Render(displayVal)
-			}
-		}
-		
-		// Note: We removed live validation visualization here because it's now handled in modal or on input.
-		// If we want to show validation status of stored config, we'd need to re-validate here.
-		// For now, simple display is consistent with "read-only view".
-
-		row := lipgloss.JoinHorizontal(lipgloss.Center, label, input)
-		formItems = append(formItems, row)
-	}
-
-	form := lipgloss.JoinVertical(lipgloss.Left, formItems...)
-
-	formBox := styles.BoxStyle.
-		Width(a.width - 10).
-		Height(formHeight).
-		Render(form)
-
-	scrollInfo := fmt.Sprintf("Showing %d-%d of %d properties", startIdx+1, endIdx, len(a.moduleProperties))
-
-	// Add options hint
-	var extraHint string
-	if a.fieldIndex < len(a.moduleProperties) {
-		focusedProp := a.moduleProperties[a.fieldIndex]
-		if len(focusedProp.Options) > 0 {
-			extraHint = fmt.Sprintf("\nAllowed values: %s", strings.Join(focusedProp.Options, ", "))
-		} else if focusedProp.Type != "" && focusedProp.Type != "string" {
-			extraHint = fmt.Sprintf("\nType: %s", focusedProp.Type)
-		}
-	}
-
-	hint := styles.DescriptionStyle.Render(scrollInfo + extraHint + " | Use ↑↓ to navigate, Enter to edit, Esc to go back")
-
-	return lipgloss.JoinVertical(lipgloss.Left, title, moduleDesc, formBox, hint)
+	return lipgloss.JoinVertical(lipgloss.Left, listView, "", hint)
 }
 
 func (a *App) renderModuleAddView() string {
@@ -1691,52 +2327,15 @@ func (a *App) renderModuleAddView() string {
 func (a *App) renderStyleEditorView() string {
 	title := styles.TitleStyle.Render("Style Editor (CSS)")
 
-	// Calculate available height
-	listHeight := a.contentHeight - lipgloss.Height(title) - 2
-	if listHeight < 4 {
-		listHeight = 4
-	}
-	
-	maxLines := listHeight - 4
-	if maxLines < 1 {
-		maxLines = 1
-	}
+	// Render viewport
+	viewportContent := a.styleViewport.View()
 
-	// Show CSS content with line numbers
-	lines := strings.Split(a.styleContent, "\n")
-	
-	// Since we don't have scrolling logic in style editor yet (it's read only here as per comment),
-	// we just show first N lines or truncated note.
-	// Implementing basic scrolling would be good but for now we follow request to fill space.
-	
-	visibleLines := lines
-	if len(lines) > maxLines {
-		visibleLines = lines[:maxLines]
-	}
+	// Info line showing position
+	totalLines := strings.Count(a.styleContent, "\n") + 1
+	scrollInfo := fmt.Sprintf("Lines: %d | Scroll: %d%%", totalLines, int(a.styleViewport.ScrollPercent()*100))
+	hint := styles.DescriptionStyle.Render("Style: " + a.stylePath + " | " + scrollInfo + " | ↑↓/PgUp/PgDn: scroll | Esc: back")
 
-	var codeLines []string
-	for i, line := range visibleLines {
-		lineNum := styles.LineNumberStyle.Render(fmt.Sprintf("%3d", i+1))
-		code := styles.CodeStyle.Render(line)
-		codeLines = append(codeLines, lipgloss.JoinHorizontal(lipgloss.Top, lineNum, code))
-	}
-
-	code := lipgloss.JoinVertical(lipgloss.Left, codeLines...)
-
-	codeBox := styles.BoxStyle.
-		Width(a.width - 10).
-		Height(listHeight).
-		Render(code)
-
-	if len(lines) > maxLines {
-		// If we truncated, maybe show that in hint or inside box?
-		// But codeBox has fixed height now, so it will just be filled.
-		// If we append "...", it might overflow.
-	}
-
-	hint := styles.DescriptionStyle.Render("Style file: " + a.stylePath + " | Press Esc to go back")
-
-	return lipgloss.JoinVertical(lipgloss.Left, title, codeBox, hint)
+	return lipgloss.JoinVertical(lipgloss.Left, title, viewportContent, hint)
 }
 
 func (a *App) renderBackupsView() string {
@@ -1798,6 +2397,17 @@ func (a *App) renderBackupsView() string {
 	hint := styles.DescriptionStyle.Render("Press Enter to restore selected backup, b to create new backup")
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, listBox, hint)
+}
+
+func (a *App) renderDiffView() string {
+	title := styles.TitleStyle.Render("Configuration Changes")
+
+	// Render table
+	tableView := a.changesTable.View()
+
+	hint := styles.DescriptionStyle.Render("Press Esc to go back | ↑↓ to navigate | / to filter by Atributo")
+
+	return lipgloss.JoinVertical(lipgloss.Left, title, "", tableView, "", hint)
 }
 
 func (a *App) renderHelpView() string {
