@@ -212,11 +212,13 @@ func (a *App) loadConfig() {
 			ModulesRight:  []string{},
 			Modules:       make(map[string]interface{}),
 		}
-		a.notification = fmt.Sprintf("Config not found, using defaults: %v", err)
-		a.notificationType = "warning"
+		a.notification = fmt.Sprintf("Load error: %v", err)
+		a.notificationType = "error"
 	} else {
 		a.config = cfg
-		a.notification = "Configuration loaded successfully"
+		// Show debug info about loaded modules
+		a.notification = fmt.Sprintf("Loaded %d modules, %d left, %d center, %d right",
+			len(cfg.Modules), len(cfg.ModulesLeft), len(cfg.ModulesCenter), len(cfg.ModulesRight))
 		a.notificationType = "success"
 	}
 
