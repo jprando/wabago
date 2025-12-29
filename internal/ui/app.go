@@ -851,38 +851,45 @@ func (a *App) renderLayout(content string) string {
 }
 
 func (a *App) renderHeader() string {
-	logo := styles.LogoStyle.Render(" ╔═╗╦ ╦╔═╗╔╗ ╔═╗╔═╗╔═╗ ")
-	logo2 := styles.LogoStyle.Render(" ║║║╠═╣╠═╣╠╩╗╠═╣║ ╦║ ║ ")
-	logo3 := styles.LogoStyle.Render(" ╚╩╝╩ ╩╩ ╩╚═╝╩ ╩╚═╝╚═╝ ")
-
-	title := lipgloss.JoinVertical(lipgloss.Left, logo, logo2, logo3)
-
+	// Simple clean logo
+	logo := styles.LogoStyle.Render("WABAGO")
 	subtitle := styles.SubtitleStyle.Render("Waybar Configuration Editor")
 
 	// Status indicator
 	var statusIcon string
 	if a.hasChanges {
-		statusIcon = styles.NotifyWarningStyle.Render(" ● UNSAVED ")
+		statusIcon = styles.NotifyWarningStyle.Render(" UNSAVED ")
 	} else {
-		statusIcon = styles.NotifySuccessStyle.Render(" ✓ SAVED ")
+		statusIcon = styles.NotifySuccessStyle.Render(" SAVED ")
 	}
 
-	// Path info
-	pathInfo := styles.TextMutedStyle.Render(fmt.Sprintf("Config: %s", a.configPath))
+	// Path info (truncate if too long)
+	configPath := a.configPath
+	maxPathLen := 40
+	if len(configPath) > maxPathLen {
+		configPath = "..." + configPath[len(configPath)-maxPathLen+3:]
+	}
+	pathInfo := styles.TextMutedStyle.Render(configPath)
 
-	headerLeft := lipgloss.JoinVertical(lipgloss.Left, title, subtitle)
-	headerRight := lipgloss.JoinVertical(lipgloss.Right, statusIcon, pathInfo)
+	// Build header with fixed layout
+	leftContent := logo + "  " + subtitle
+	rightContent := statusIcon + "  " + pathInfo
+
+	// Calculate spacing
+	totalWidth := a.width - 4
+	leftWidth := lipgloss.Width(leftContent)
+	rightWidth := lipgloss.Width(rightContent)
+	spacerWidth := totalWidth - leftWidth - rightWidth
+
+	if spacerWidth < 2 {
+		spacerWidth = 2
+	}
+
+	spacer := strings.Repeat(" ", spacerWidth)
+	headerLine := leftContent + spacer + rightContent
 
 	headerStyle := styles.HeaderStyle.Width(a.width - 4)
-
-	header := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		headerLeft,
-		lipgloss.NewStyle().Width(a.width-lipgloss.Width(headerLeft)-lipgloss.Width(headerRight)-8).Render(""),
-		headerRight,
-	)
-
-	return headerStyle.Render(header)
+	return headerStyle.Render(headerLine)
 }
 
 func (a *App) renderFooter() string {
