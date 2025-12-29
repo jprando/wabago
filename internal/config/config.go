@@ -192,10 +192,22 @@ func (m *ConfigManager) LoadConfig() (*WaybarConfig, error) {
 	// Strip JSONC comments
 	jsonContent := stripJSONCComments(string(content))
 
-	// First parse into raw map
+	// Try to parse - config can be object or array (for multiple bars)
 	var raw map[string]interface{}
+
+	// First try as object
 	if err := json.Unmarshal([]byte(jsonContent), &raw); err != nil {
-		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
+		// Try as array (multiple bars config)
+		var rawArray []map[string]interface{}
+		if err2 := json.Unmarshal([]byte(jsonContent), &rawArray); err2 != nil {
+			return nil, fmt.Errorf("failed to parse config JSON: %w (also tried as array: %v)", err, err2)
+		}
+		// Use first bar config
+		if len(rawArray) > 0 {
+			raw = rawArray[0]
+		} else {
+			return nil, fmt.Errorf("config array is empty")
+		}
 	}
 
 	// Then parse into struct
